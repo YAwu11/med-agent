@@ -4,7 +4,9 @@ from langchain.tools import BaseTool
 
 from deerflow.config import get_app_config
 from deerflow.reflection import resolve_variable
-from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, view_image_tool
+# [P0-DISABLED] view_image_tool 已停用。P3阶段取消注释恢复。
+# from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, view_image_tool
+from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool
 from deerflow.tools.builtins.tool_search import reset_deferred_registry
 
 logger = logging.getLogger(__name__)
@@ -55,11 +57,17 @@ def get_available_tools(
     if model_name is None and config.models:
         model_name = config.models[0].name
 
-    # Add view_image_tool only if the model supports vision
-    model_config = config.get_model_config(model_name) if model_name else None
-    if model_config is not None and model_config.supports_vision:
-        builtin_tools.append(view_image_tool)
-        logger.info(f"Including view_image_tool for model '{model_name}' (supports_vision=True)")
+    # [P0-DISABLED] view_image_tool 条件加载已停用
+    # 原逻辑：当模型supports_vision=true时，将view_image工具加入Agent工具列表
+    # 停用原因：配合ViewImageMiddleware停用，阻断Base64编码进入对话上下文
+    # [P3-REACTIVATE] 恢复时：
+    #   1. 取消文件顶部 view_image_tool import 的注释
+    #   2. 取消下方代码的注释
+    #   3. 配合P2阶段视觉网关的分类结果，仅对"临床照片"类型启用
+    # model_config = config.get_model_config(model_name) if model_name else None
+    # if model_config is not None and model_config.supports_vision:
+    #     builtin_tools.append(view_image_tool)
+    #     logger.info(f"Including view_image_tool for model '{model_name}' (supports_vision=True)")
 
     # Get cached MCP tools if enabled
     # NOTE: We use ExtensionsConfig.from_file() instead of config.extensions

@@ -64,6 +64,27 @@ SYSTEM_PROMPT_TEMPLATE = """
 2. **深度医疗知识检索** → 当网络搜索不够时，委派给 `medical-knowledge-agent`
 </medical_capabilities>
 
+<image_handling_protocol>
+**图片处理编排规则（核心规则，必须严格遵守）：**
+
+当用户上传了图片文件时，遵循以下处理优先级：
+
+1. **医疗影像（X光/CT/MRI/超声等）** → **必须委派**
+   - 从上传文件列表中提取文件路径
+   - 通过 `task` 工具将文件路径传递给 `imaging-agent`
+   - 等待影像Agent返回结构化分析报告后，综合回复用户
+   - 示例：`task(description="CT影像分析", prompt="请分析以下医疗影像文件: /mnt/user-data/uploads/ct_scan.png", subagent_type="imaging-agent")`
+
+2. **化验单/检查报告** → **你直接处理**
+   - 使用 `read_file` 工具读取文件内容
+   - 如果是图片格式的化验单，说明需要OCR处理（当前版本暂不支持图片OCR，建议用户上传PDF或文本格式）
+
+3. **无法判断图片类型** → **主动向用户澄清**
+   - 询问用户图片是影像类（X光/CT等）还是检查报告（化验单/检验单）
+
+**⚠️ 重要：你的视觉能力仅作为保底机制。首选方案始终是提取文件路径并委派给专业子Agent处理，而非直接分析图片内容。**
+</image_handling_protocol>
+
 {skills_section}
 
 {deferred_tools_section}
@@ -90,8 +111,8 @@ SYSTEM_PROMPT_TEMPLATE = """
 </response_style>
 
 <critical_reminders>
-{subagent_reminder}- 化验单直接分析：如果用户上传了化验单，直接识别和分析，不需要委派子Agent
-- 影像委派：如果用户上传了医疗影像（X光、CT、MRI），委派给imaging-agent
+{subagent_reminder}- 图片处理：识别到医疗影像时，提取路径并委派给imaging-agent，不要试图自己分析影像
+- 化验单直接分析：如果用户上传了化验单文本/PDF，直接识别和分析
 - 知识检索升级：如果网络搜索结果不足以回答医疗问题，委派给medical-knowledge-agent
 - 输出文件：最终交付物必须保存到 `/mnt/user-data/outputs`
 - 并行工具调用：尽量并行调用多个工具以提升效率
