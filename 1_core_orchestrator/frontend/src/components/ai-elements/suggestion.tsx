@@ -5,7 +5,7 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Icon } from "@radix-ui/react-select";
 import type { LucideIcon } from "lucide-react";
-import { Children, type ComponentProps } from "react";
+import React, { Children, type ComponentProps } from "react";
 
 const STAGGER_DELAY_MS = 60;
 const STAGGER_DELAY_MS_OFFSET = 250;
@@ -44,7 +44,7 @@ export type SuggestionProps = Omit<ComponentProps<typeof Button>, "onClick"> & {
   onClick?: () => void;
 };
 
-export const Suggestion = ({
+export const Suggestion = React.forwardRef<HTMLButtonElement, SuggestionProps>(({
   suggestion,
   onClick,
   className,
@@ -53,13 +53,14 @@ export const Suggestion = ({
   size = "sm",
   children,
   ...props
-}: SuggestionProps) => {
+}, ref) => {
   const handleClick = () => {
     onClick?.();
   };
 
   return (
     <Button
+      ref={ref}
       className={cn(
         "text-muted-foreground cursor-pointer rounded-full px-4 text-xs font-normal",
         className,
@@ -74,4 +75,5 @@ export const Suggestion = ({
       {children || suggestion}
     </Button>
   );
-};
+});
+Suggestion.displayName = "Suggestion";

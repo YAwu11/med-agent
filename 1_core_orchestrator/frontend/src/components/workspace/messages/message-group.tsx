@@ -47,6 +47,7 @@ export function MessageGroup({
   className?: string;
   messages: Message[];
   isLoading?: boolean;
+  threadId?: string;
 }) {
   const { t } = useI18n();
   const [showAbove, setShowAbove] = useState(

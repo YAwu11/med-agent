@@ -19,6 +19,7 @@ import {
 import { Task, TaskTrigger } from "@/components/ai-elements/task";
 import { Badge } from "@/components/ui/badge";
 import { resolveArtifactURL } from "@/core/artifacts/utils";
+import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   extractContentFromMessage,
@@ -39,10 +40,12 @@ export function MessageListItem({
   className,
   message,
   isLoading,
+  threadId,
 }: {
   className?: string;
   message: Message;
   isLoading?: boolean;
+  threadId?: string;
 }) {
   const isHuman = message.type === "human";
   return (
@@ -54,6 +57,7 @@ export function MessageListItem({
         className={isHuman ? "w-fit" : "w-full"}
         message={message}
         isLoading={isLoading}
+        threadId={threadId}
       />
       {!isLoading && (
         <MessageToolbar
@@ -111,21 +115,24 @@ function MessageContent_({
   className,
   message,
   isLoading = false,
+  threadId,
 }: {
   className?: string;
   message: Message;
   isLoading?: boolean;
+  threadId?: string;
 }) {
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const isHuman = message.type === "human";
-  const { thread_id } = useParams<{ thread_id: string }>();
+  const { thread_id: paramsThreadId } = useParams<{ thread_id: string }>();
+  const effectiveThreadId = threadId || (message as any).thread_id || paramsThreadId;
   const components = useMemo(
     () => ({
       img: (props: ImgHTMLAttributes<HTMLImageElement>) => (
-        <MessageImage {...props} threadId={thread_id} maxWidth="90%" />
+        <MessageImage {...props} threadId={effectiveThreadId!} maxWidth="90%" />
       ),
     }),
-    [thread_id],
+    [effectiveThreadId],
   );
 
   const rawContent = extractContentFromMessage(message);
@@ -151,8 +158,8 @@ function MessageContent_({
   }, [rawContent, isHuman]);
 
   const filesList =
-    files && files.length > 0 && thread_id ? (
-      <RichFilesList files={files} threadId={thread_id} />
+    files && files.length > 0 && effectiveThreadId ? (
+      <RichFilesList files={files} threadId={effectiveThreadId} />
     ) : null;
 
   // Uploading state: mock AI message shown while files upload
@@ -339,7 +346,11 @@ function RichFileCard({
 
   if (!file.path) return null;
 
-  const fileUrl = resolveArtifactURL(file.path, threadId);
+  // artifact_url starts with /api/ and already contains the real thread ID;
+  // virtual_path starts with /mnt/ and needs resolveArtifactURL to build the full URL.
+  const fileUrl = file.path.startsWith("/api/")
+    ? `${getBackendBaseURL()}${file.path}`
+    : resolveArtifactURL(file.path, threadId);
 
   if (isImage) {
     return (
