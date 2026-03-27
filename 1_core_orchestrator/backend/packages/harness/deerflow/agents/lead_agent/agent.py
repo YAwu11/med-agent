@@ -12,12 +12,8 @@ from deerflow.agents.middlewares.title_middleware import TitleMiddleware
 from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddleware
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
-# [P0-DISABLED] ViewImageMiddleware 已在P0阶段停用，阻断Base64编码注入对话上下文。
-# [P3-REACTIVATE] P3阶段实现"条件式视觉注入+阅后即焚"时，取消此注释并添加新的条件判断逻辑：
-#   - 仅对"临床照片"类型图片（如皮疹、外伤）激活视觉注入
-#   - 影像(X光/CT/MRI)和化验单走纯文本管道，不注入Base64
-#   - 注入后需配合"阅后即焚"中间件清理历史中的Base64数据
-# from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
+from deerflow.agents.middlewares.conditional_vision_middleware import ConditionalVisionMiddleware
+from deerflow.agents.middlewares.read_and_burn_middleware import ReadAndBurnMiddleware
 from deerflow.agents.thread_state import ThreadState
 from deerflow.config.agents_config import load_agent_config
 from deerflow.config.app_config import get_app_config
@@ -239,25 +235,14 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     # Add TitleMiddleware
     middlewares.append(TitleMiddleware())
 
-    # ┌─────────────────────────────────────────────────────────────────────┐
-    # │ [P0-DISABLED] ViewImageMiddleware — Base64视觉注入已停用            │
-    # │                                                                     │
-    # │ 原逻辑：当模型supports_vision=true时，view_image工具读取图片后，     │
-    # │ 此中间件将Base64编码注入对话HumanMessage，让VL模型"看到"图片。       │
-    # │                                                                     │
-    # │ 停用原因：Base64注入会严重污染主Agent上下文（一张图~200万字符），      │
-    # │ 导致Token消耗黑洞和响应卡顿。医疗影像应走纯文本路径调度管道。         │
-    # │                                                                     │
-    # │ [P3-REACTIVATE] 恢复步骤：                                          │
-    # │ 1. 取消文件顶部 ViewImageMiddleware import 的注释                    │
-    # │ 2. 取消下方代码的注释                                               │
-    # │ 3. 添加图片类型判断条件（仅对"临床照片"注入，影像/化验单不注入）       │
-    # │ 4. 在此中间件之后追加"阅后即焚"中间件，分析完成后清理Base64           │
-    # └─────────────────────────────────────────────────────────────────────┘
-    # app_config = get_app_config()
-    # model_config = app_config.get_model_config(model_name) if model_name else None
-    # if model_config is not None and model_config.supports_vision:
-    #     middlewares.append(ViewImageMiddleware())
+    # P3: 条件式视觉注入（Base64）与 阅后即焚（清理Base64以节省Tokens）
+    # 仅在模型支持视觉时，才将临床照片的Base64编码注入到 HumanMessage 中
+    # 并通过阅后即焚中间件在推理完成后清理该数据。
+    app_config = get_app_config()
+    model_config = app_config.get_model_config(model_name) if model_name else None
+    if model_config is not None and model_config.supports_vision:
+        middlewares.append(ConditionalVisionMiddleware())
+        middlewares.append(ReadAndBurnMiddleware())
 
     # Add DeferredToolFilterMiddleware to hide deferred tool schemas from model binding
     app_config = get_app_config()

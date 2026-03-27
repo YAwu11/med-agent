@@ -41,6 +41,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         error_msg = f"Failed to load configuration during gateway startup: {e}"
         logger.exception(error_msg)
         raise RuntimeError(error_msg) from e
+
+    # ── P2: 视觉管道预热（仅 vision.enabled: true 时执行） ──
+    vision_cfg = getattr(get_app_config(), "vision", None) or {}
+    if vision_cfg.get("enabled", False):
+        try:
+            from app.gateway.services.vision_gateway import warmup
+
+            warmup()
+        except Exception:
+            logger.exception("Chinese-CLIP 模型预热失败，视觉管道将不可用")
+
     config = get_gateway_config()
     logger.info(f"Starting API Gateway on {config.host}:{config.port}")
 
