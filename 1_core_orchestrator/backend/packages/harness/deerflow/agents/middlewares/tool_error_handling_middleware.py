@@ -73,11 +73,12 @@ def _build_runtime_middlewares(
 ) -> list[AgentMiddleware]:
     """Build shared base middlewares for agent execution."""
     from deerflow.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
-    from deerflow.sandbox.middleware import SandboxMiddleware
+    # [Phase7] SandboxMiddleware 已移除：医疗场景不需要代码沙箱
+    # from deerflow.sandbox.middleware import SandboxMiddleware
 
     middlewares: list[AgentMiddleware] = [
         ThreadDataMiddleware(lazy_init=lazy_init),
-        SandboxMiddleware(lazy_init=lazy_init),
+        # [Phase7] SandboxMiddleware(lazy_init=lazy_init),  — 已移除
     ]
 
     if include_uploads:

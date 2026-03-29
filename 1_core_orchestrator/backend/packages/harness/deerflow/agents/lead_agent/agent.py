@@ -251,11 +251,11 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
 
         middlewares.append(DeferredToolFilterMiddleware())
 
-    # Add SubagentLimitMiddleware to truncate excess parallel task calls
-    subagent_enabled = config.get("configurable", {}).get("subagent_enabled", False)
-    if subagent_enabled:
-        max_concurrent_subagents = config.get("configurable", {}).get("max_concurrent_subagents", 3)
-        middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents))
+    # [Phase7] SubagentLimitMiddleware 已移除：不再使用子Agent
+    # subagent_enabled = config.get("configurable", {}).get("subagent_enabled", False)
+    # if subagent_enabled:
+    #     max_concurrent_subagents = config.get("configurable", {}).get("max_concurrent_subagents", 3)
+    #     middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents))
 
     # LoopDetectionMiddleware — detect and break repetitive tool call loops
     middlewares.append(LoopDetectionMiddleware())
@@ -275,9 +275,10 @@ def make_lead_agent(config: RunnableConfig):
     thinking_enabled = cfg.get("thinking_enabled", True)
     reasoning_effort = cfg.get("reasoning_effort", None)
     requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
+    # [Phase7] is_plan_mode 和 subagent_enabled 保留读取但不再影响行为
     is_plan_mode = cfg.get("is_plan_mode", False)
-    subagent_enabled = cfg.get("subagent_enabled", False)
-    max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
+    subagent_enabled = False  # [Phase7] 强制关闭
+    max_concurrent_subagents = 0  # [Phase7] 强制归零
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_name = cfg.get("agent_name")
 

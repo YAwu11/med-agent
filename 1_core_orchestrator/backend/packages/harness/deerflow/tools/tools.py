@@ -6,7 +6,8 @@ from deerflow.config import get_app_config
 from deerflow.reflection import resolve_variable
 # [P0-DISABLED] view_image_tool 已停用。P3阶段取消注释恢复。
 # from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, view_image_tool
-from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, submit_for_review_tool
+from deerflow.tools.builtins import ask_clarification_tool, present_file_tool
+# [Phase7] submit_for_review_tool 和 task_tool 已移除
 from deerflow.tools.builtins.tool_search import reset_deferred_registry
 
 logger = logging.getLogger(__name__)
@@ -14,12 +15,8 @@ logger = logging.getLogger(__name__)
 BUILTIN_TOOLS = [
     present_file_tool,
     ask_clarification_tool,
-    submit_for_review_tool,  # Required for HITL imaging workflow
-]
-
-SUBAGENT_TOOLS = [
-    task_tool,
-    # task_status_tool is no longer exposed to LLM (backend handles polling internally)
+    # [Phase7] submit_for_review_tool 已移除：不再阻塞等医生审核
+    # [Phase7] task_tool 已移除：患者端主Agent直接调工具
 ]
 
 
@@ -49,10 +46,7 @@ def get_available_tools(
     # Conditionally add tools based on config
     builtin_tools = BUILTIN_TOOLS.copy()
 
-    # Add subagent tools only if enabled via runtime parameter
-    if subagent_enabled:
-        builtin_tools.extend(SUBAGENT_TOOLS)
-        logger.info("Including subagent tools (task)")
+    # [Phase7] 子Agent工具已移除，主Agent直接调用MCP工具
 
     # If no model_name specified, use the first model (default)
     if model_name is None and config.models:
