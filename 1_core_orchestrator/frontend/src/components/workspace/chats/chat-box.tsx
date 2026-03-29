@@ -17,17 +17,14 @@ import {
   ArtifactFileDetail,
   ArtifactFileList,
   useArtifacts,
-  ImagingReviewPanel,
-  ImagingViewerPanel,
-  DiagnosticDashboard,
 } from "../artifacts";
-import { usePendingImagingReports, useReviewedImagingReports, type ImagingReport } from "@/core/imaging/api";
 import { useThread } from "../messages/context";
 
+// [Phase7] 影像审核组件已迁移至医生端 (components/doctor/)
+// 患者端 ChatBox 回归纯聊天 + 文件展示功能
+
 export const ChatBoxContext = React.createContext<{
-  hasImaging: boolean;
-  openImagingReview: () => void;
-  openImagingViewer: () => void;
+  // [Phase7] 影像审核相关上下文已移除
 } | null>(null);
 
 const CLOSE_MODE = { chat: 100, artifacts: 0 };
@@ -36,11 +33,10 @@ const OPEN_MODE = { chat: 60, artifacts: 40 };
 const ChatBox: React.FC<{
   children: React.ReactNode;
   threadId: string;
-  onReJudge?: (summary: string) => void;
+  // [Phase7] onReJudge prop 已移除，诊断功能移至医生端
 }> = ({
   children,
   threadId,
-  onReJudge,
 }) => {
   const { thread } = useThread();
   const pathname = usePathname();
@@ -57,62 +53,11 @@ const ChatBox: React.FC<{
     selectedArtifact,
   } = useArtifacts();
 
-  const { data: pendingReport } = usePendingImagingReports(threadId);
-  const { data: reviewedReports } = useReviewedImagingReports(threadId);
-
-  const [lastOpenedReportId, setLastOpenedReportId] = useState<string | null>(null);
-
-  // Track sidebar mode: "dashboard" | "review" | "viewer" | "artifact" | null
-  const [sidebarMode, setSidebarMode] = useState<"dashboard" | "review" | "viewer" | "artifact" | null>(null);
-  const [viewerReport, setViewerReport] = useState<ImagingReport | null>(null);
-  const [reEditReport, setReEditReport] = useState<ImagingReport | null>(null);
-
-  // Automatically open the side panel if there's a new pending report
-  useEffect(() => {
-    if (pendingReport && pendingReport.report_id !== lastOpenedReportId) {
-      setArtifactsOpen(true);
-      setSidebarMode("dashboard");
-      setReEditReport(null);
-      setLastOpenedReportId(pendingReport.report_id);
-    }
-  }, [pendingReport, lastOpenedReportId, setArtifactsOpen]);
-
-  // Handle review completion → switch to dashboard
-  const handleReviewComplete = useCallback((completedReport: ImagingReport) => {
-    setViewerReport(completedReport);
-    setSidebarMode("dashboard");
-    setReEditReport(null);
-  }, []);
-
-  // Handle re-edit → switch back to review mode
-  const handleReEdit = useCallback((report: ImagingReport) => {
-    setReEditReport(report);
-    setSidebarMode("review");
-  }, []);
-
-  // Handle toggle — collapse/expand without destroying state
-  const handleToggleSidebar = useCallback(() => {
-    if (artifactsOpen) {
-      setArtifactsOpen(false);
-    } else {
-      setArtifactsOpen(true);
-    }
-  }, [artifactsOpen, setArtifactsOpen]);
-
-  // Handle close (from X button) — collapse only, preserve state
-  const handleClose = useCallback(() => {
-    setArtifactsOpen(false);
-  }, [setArtifactsOpen]);
-
   const [autoSelectFirstArtifact, setAutoSelectFirstArtifact] = useState(true);
   useEffect(() => {
     if (threadIdRef.current !== threadId) {
       threadIdRef.current = threadId;
       deselect();
-      setSidebarMode(null);
-      setViewerReport(null);
-      setReEditReport(null);
-      setLastOpenedReportId(null);
     }
 
     // Update artifacts from the current thread
@@ -164,79 +109,14 @@ const ChatBox: React.FC<{
     }
   }, [artifactPanelOpen, resizableIdBase]);
 
-  // Determine which report to show in review mode
-  const activeReviewReport = reEditReport || pendingReport;
+  // Handle close (from X button) — collapse only
+  const handleClose = useCallback(() => {
+    setArtifactsOpen(false);
+  }, [setArtifactsOpen]);
 
-  // Determine which report to show in viewer mode
-  const activeViewerReport = viewerReport || (reviewedReports && reviewedReports.length > 0 ? reviewedReports[reviewedReports.length - 1] : null);
-
-  // Render sidebar content based on mode
+  // [Phase7] 简化后的侧边栏：只展示 Artifact 文件
   const renderSidebarContent = () => {
-    if (sidebarMode === "dashboard") {
-      return (
-        <DiagnosticDashboard
-          className="size-full"
-          threadId={threadId}
-          pendingImaging={pendingReport || null}
-          reviewedImaging={reviewedReports || []}
-          onClose={handleClose}
-          onOpenImagingReview={() => setSidebarMode("review")}
-          onOpenImagingViewer={() => setSidebarMode("viewer")}
-          onGenerateGlobalDiagnosis={(summary) => {
-            onReJudge?.(summary);
-            handleClose();
-          }}
-        />
-      );
-    }
-
-    // Priority 1: Review mode (pending or re-edit)
-    if (sidebarMode === "review" && activeReviewReport) {
-      return (
-        <ImagingReviewPanel
-          className="size-full"
-          threadId={threadId}
-          report={activeReviewReport}
-          onClose={() => setSidebarMode("dashboard")} // Go back to dashboard
-          onReviewComplete={handleReviewComplete}
-        />
-      );
-    }
-
-    // Priority 2: Viewer mode (reviewed report)
-    if (sidebarMode === "viewer" && activeViewerReport) {
-      return (
-        <ImagingViewerPanel
-          className="size-full"
-          threadId={threadId}
-          report={activeViewerReport}
-          onClose={() => setSidebarMode("dashboard")} // Go back to dashboard
-          onReEdit={handleReEdit}
-          // onReJudge intentionally omitted as it moved to Dashboard
-        />
-      );
-    }
-
-    // Priority 3: Pending report fallback
-    if (pendingReport) {
-      return (
-        <DiagnosticDashboard
-          className="size-full"
-          threadId={threadId}
-          pendingImaging={pendingReport || null}
-          reviewedImaging={reviewedReports || []}
-          onClose={handleClose}
-          onOpenImagingReview={() => setSidebarMode("review")}
-          onOpenImagingViewer={() => setSidebarMode("viewer")}
-          onGenerateGlobalDiagnosis={(summary) => {
-            onReJudge?.(summary);
-            handleClose();
-          }}
-        />
-      );
-    }
-
-    // Priority 4: Selected artifact
+    // Selected artifact detail view
     if (selectedArtifact) {
       return (
         <ArtifactFileDetail
@@ -247,7 +127,7 @@ const ChatBox: React.FC<{
       );
     }
 
-    // Priority 5: Empty state or artifact list
+    // Empty state or artifact list
     return (
       <div className="relative flex size-full justify-center">
         <div className="absolute top-1 right-1 z-30">
@@ -259,21 +139,7 @@ const ChatBox: React.FC<{
             <XIcon />
           </Button>
         </div>
-        {/* Show reviewed report thumbnail if available */}
-        {activeViewerReport ? (
-          <div className="flex size-full flex-col items-center justify-center p-4">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setSidebarMode("viewer");
-                setArtifactsOpen(true);
-              }}
-              className="gap-2"
-            >
-              查看已审核的影像报告
-            </Button>
-          </div>
-        ) : !thread.values.artifacts || thread.values.artifacts.length === 0 ? (
+        {!thread.values.artifacts || thread.values.artifacts.length === 0 ? (
           <ConversationEmptyState
             icon={<FilesIcon />}
             title="No artifact selected"
@@ -297,17 +163,7 @@ const ChatBox: React.FC<{
     );
   };
 
-  const contextValue = useMemo(() => ({
-    hasImaging: !!pendingReport || (!!reviewedReports && reviewedReports.length > 0),
-    openImagingReview: () => {
-      setSidebarMode("dashboard");
-      setArtifactsOpen(true);
-    },
-    openImagingViewer: () => {
-      setSidebarMode("dashboard");
-      setArtifactsOpen(true);
-    }
-  }), [pendingReport, reviewedReports, setArtifactsOpen]);
+  const contextValue = useMemo(() => ({}), []);
 
   return (
     <ResizablePanelGroup
@@ -336,7 +192,7 @@ const ChatBox: React.FC<{
       <ResizablePanel
         className={cn(
           "transition-all duration-300 ease-in-out",
-          !artifactsOpen && !sidebarMode && "opacity-0",
+          !artifactsOpen && "opacity-0",
         )}
         id="artifacts"
       >

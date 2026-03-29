@@ -71,20 +71,11 @@ export default function ChatPage() {
     await thread.stop();
   }, [thread]);
 
-  // Global Diagnosis: inject a human message with the grand summary of all modalities
-  const handleReJudge = useCallback(
-    (grandSummary: string) => {
-      void sendMessage(threadId, {
-        text: `[系统通知] 医生已完成所有检查项目的审核与确认。\n\n以下是医生评估后的综合多模态证据摘要：\n\n${grandSummary}\n\n请作为主任医师，基于以上已确认且互相印证的化验、影像及病史资料，严谨、权威地给出最终的【综合诊断报告】与【后续治疗/随访建议】。务必结合全部异常情况进行推断，若存在矛盾需提示医生。`,
-        files: [],
-      });
-    },
-    [sendMessage, threadId],
-  );
+  // [Phase7] handleReJudge 已移至医生端 Dashboard
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
-      <ChatBox threadId={threadId} onReJudge={handleReJudge}>
+      <ChatBox threadId={threadId}>
         <div className="relative flex size-full min-h-0 justify-between">
           <header
             className={cn(
