@@ -71,11 +71,11 @@ export default function ChatPage() {
     await thread.stop();
   }, [thread]);
 
-  // Re-judge: inject a human message with updated evidence summary
+  // Global Diagnosis: inject a human message with the grand summary of all modalities
   const handleReJudge = useCallback(
-    (updatedSummary: string) => {
+    (grandSummary: string) => {
       void sendMessage(threadId, {
-        text: `[系统通知] 医生已修改影像分析结果。\n\n更新后的影像报告摘要：\n${updatedSummary}\n\n请结合之前的化验单和病历分析，重新给出综合诊断意见。未修改的证据维持原判断，仅更新影像相关部分。`,
+        text: `[系统通知] 医生已完成所有检查项目的审核与确认。\n\n以下是医生评估后的综合多模态证据摘要：\n\n${grandSummary}\n\n请作为主任医师，基于以上已确认且互相印证的化验、影像及病史资料，严谨、权威地给出最终的【综合诊断报告】与【后续治疗/随访建议】。务必结合全部异常情况进行推断，若存在矛盾需提示医生。`,
         files: [],
       });
     },

@@ -19,6 +19,7 @@ import {
   useArtifacts,
   ImagingReviewPanel,
   ImagingViewerPanel,
+  DiagnosticDashboard,
 } from "../artifacts";
 import { usePendingImagingReports, useReviewedImagingReports, type ImagingReport } from "@/core/imaging/api";
 import { useThread } from "../messages/context";
@@ -61,8 +62,8 @@ const ChatBox: React.FC<{
 
   const [lastOpenedReportId, setLastOpenedReportId] = useState<string | null>(null);
 
-  // Track sidebar mode: "review" | "viewer" | "artifact" | null
-  const [sidebarMode, setSidebarMode] = useState<"review" | "viewer" | "artifact" | null>(null);
+  // Track sidebar mode: "dashboard" | "review" | "viewer" | "artifact" | null
+  const [sidebarMode, setSidebarMode] = useState<"dashboard" | "review" | "viewer" | "artifact" | null>(null);
   const [viewerReport, setViewerReport] = useState<ImagingReport | null>(null);
   const [reEditReport, setReEditReport] = useState<ImagingReport | null>(null);
 
@@ -70,16 +71,16 @@ const ChatBox: React.FC<{
   useEffect(() => {
     if (pendingReport && pendingReport.report_id !== lastOpenedReportId) {
       setArtifactsOpen(true);
-      setSidebarMode("review");
+      setSidebarMode("dashboard");
       setReEditReport(null);
       setLastOpenedReportId(pendingReport.report_id);
     }
   }, [pendingReport, lastOpenedReportId, setArtifactsOpen]);
 
-  // Handle review completion → switch to viewer
+  // Handle review completion → switch to dashboard
   const handleReviewComplete = useCallback((completedReport: ImagingReport) => {
     setViewerReport(completedReport);
-    setSidebarMode("viewer");
+    setSidebarMode("dashboard");
     setReEditReport(null);
   }, []);
 
@@ -171,6 +172,24 @@ const ChatBox: React.FC<{
 
   // Render sidebar content based on mode
   const renderSidebarContent = () => {
+    if (sidebarMode === "dashboard") {
+      return (
+        <DiagnosticDashboard
+          className="size-full"
+          threadId={threadId}
+          pendingImaging={pendingReport || null}
+          reviewedImaging={reviewedReports || []}
+          onClose={handleClose}
+          onOpenImagingReview={() => setSidebarMode("review")}
+          onOpenImagingViewer={() => setSidebarMode("viewer")}
+          onGenerateGlobalDiagnosis={(summary) => {
+            onReJudge?.(summary);
+            handleClose();
+          }}
+        />
+      );
+    }
+
     // Priority 1: Review mode (pending or re-edit)
     if (sidebarMode === "review" && activeReviewReport) {
       return (
@@ -178,7 +197,7 @@ const ChatBox: React.FC<{
           className="size-full"
           threadId={threadId}
           report={activeReviewReport}
-          onClose={handleClose}
+          onClose={() => setSidebarMode("dashboard")} // Go back to dashboard
           onReviewComplete={handleReviewComplete}
         />
       );
@@ -191,22 +210,28 @@ const ChatBox: React.FC<{
           className="size-full"
           threadId={threadId}
           report={activeViewerReport}
-          onClose={handleClose}
+          onClose={() => setSidebarMode("dashboard")} // Go back to dashboard
           onReEdit={handleReEdit}
-          onReJudge={onReJudge}
+          // onReJudge intentionally omitted as it moved to Dashboard
         />
       );
     }
 
-    // Priority 3: Pending report (auto-detected)
+    // Priority 3: Pending report fallback
     if (pendingReport) {
       return (
-        <ImagingReviewPanel
+        <DiagnosticDashboard
           className="size-full"
           threadId={threadId}
-          report={pendingReport}
+          pendingImaging={pendingReport || null}
+          reviewedImaging={reviewedReports || []}
           onClose={handleClose}
-          onReviewComplete={handleReviewComplete}
+          onOpenImagingReview={() => setSidebarMode("review")}
+          onOpenImagingViewer={() => setSidebarMode("viewer")}
+          onGenerateGlobalDiagnosis={(summary) => {
+            onReJudge?.(summary);
+            handleClose();
+          }}
         />
       );
     }
@@ -275,17 +300,11 @@ const ChatBox: React.FC<{
   const contextValue = useMemo(() => ({
     hasImaging: !!pendingReport || (!!reviewedReports && reviewedReports.length > 0),
     openImagingReview: () => {
-      if (pendingReport) {
-        setSidebarMode("review");
-      } else if (reviewedReports && reviewedReports.length > 0) {
-        setSidebarMode("viewer");
-      } else {
-        setSidebarMode("review");
-      }
+      setSidebarMode("dashboard");
       setArtifactsOpen(true);
     },
     openImagingViewer: () => {
-      setSidebarMode("viewer");
+      setSidebarMode("dashboard");
       setArtifactsOpen(true);
     }
   }), [pendingReport, reviewedReports, setArtifactsOpen]);

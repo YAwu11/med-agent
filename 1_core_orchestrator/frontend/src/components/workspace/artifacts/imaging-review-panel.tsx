@@ -15,7 +15,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { submitImagingReview, type ImagingReport } from "@/core/imaging/api";
+import { submitImagingReview, generateImagingDraft, type ImagingReport } from "@/core/imaging/api";
 import { useI18n } from "@/core/i18n/hooks";
 import { listUploadedFiles } from "@/core/uploads/api";
 import { cn } from "@/lib/utils";
@@ -110,6 +110,10 @@ export function ImagingReviewPanel({
   const [conclusion, setConclusion] = useState<"normal" | "abnormal" | "pending">(
     report.doctor_result?.conclusion || "pending",
   );
+
+  // ── Copilot State ──
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
+  const [copilotPrompt, setCopilotPrompt] = useState("");
 
   // ── Pending new rect (awaiting form input) ──
   const [pendingBbox, setPendingBbox] = useState<[number, number, number, number] | null>(null);
@@ -218,6 +222,12 @@ export function ImagingReviewPanel({
     [undoRedo, editableFindings, brushStrokes],
   );
 
+  // DenseNet probs
+  const [densenetProbs, setDensenetProbs] = useState<Record<string, number>>(
+    report.doctor_result?.densenet_probs || report.ai_result?.densenet_probs || {}
+  );
+  const aiDensenetProbs = report.ai_result?.densenet_probs || {};
+
   // ── Submit ──
   const handleSubmit = useCallback(async () => {
     setIsSubmitting(true);
@@ -243,14 +253,33 @@ export function ImagingReviewPanel({
     }
   }, [
     threadId, report, editableFindings, brushStrokes,
-    doctorComment, conclusion, queryClient, onReviewComplete,
+    doctorComment, conclusion, queryClient, onReviewComplete, densenetProbs
   ]);
 
-  // DenseNet probs
-  const [densenetProbs, setDensenetProbs] = useState<Record<string, number>>(
-    report.doctor_result?.densenet_probs || report.ai_result?.densenet_probs || {}
-  );
-  const aiDensenetProbs = report.ai_result?.densenet_probs || {};
+  // ── Generate Draft (Copilot) ──
+  const handleGenerateDraft = useCallback(async () => {
+    setIsGeneratingDraft(true);
+    try {
+      const draftReqData = {
+        findings: editableFindings,
+        densenet_probs: densenetProbs,
+      };
+      const res = await generateImagingDraft(threadId, draftReqData, copilotPrompt);
+      setDoctorComment((prev) => {
+        const p = prev.trim();
+        return p ? `${p}\n\n${res.report_text}` : res.report_text;
+      });
+      toast.success("已生成报告草稿");
+      setCopilotPrompt("");
+    } catch (err) {
+      console.error(err);
+      toast.error("生成失败请重试");
+    } finally {
+      setIsGeneratingDraft(false);
+    }
+  }, [threadId, editableFindings, densenetProbs, copilotPrompt]);
+
+
 
   const [newDisease, setNewDisease] = useState("");
   const handleAddDisease = useCallback((e?: React.FormEvent) => {
@@ -480,11 +509,32 @@ export function ImagingReviewPanel({
           </div>
         </div>
 
-        {/* 5. Doctor input */}
+        {/* 5. Doctor input & Copilot */}
         <div className="space-y-3 pt-2">
-          <h3 className="text-xs font-medium text-muted-foreground tracking-wider uppercase">
-            诊断意见
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-medium text-muted-foreground tracking-wider uppercase">
+              诊断意见
+            </h3>
+            {/* AI Copilot Inline Trigger */}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="例如: 重点描述右下肺..."
+                value={copilotPrompt}
+                onChange={e => setCopilotPrompt(e.target.value)}
+                className="text-[11px] px-2 py-1 w-36 bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:border-sky-400 focus:bg-white transition-all shadow-sm"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleGenerateDraft}
+                disabled={isGeneratingDraft}
+                className="h-7 text-[11px] px-2.5 bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100 hover:text-sky-800"
+              >
+                {isGeneratingDraft ? <Loader2Icon className="w-3 h-3 animate-spin" /> : "✨ 生成放射报告草稿"}
+              </Button>
+            </div>
+          </div>
           <Textarea
             placeholder="输入最终影像学诊断意见..."
             value={doctorComment}

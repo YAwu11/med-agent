@@ -87,3 +87,22 @@ export async function submitImagingReview(
   if (!response.ok) throw new Error("Failed to submit review");
   return response.json();
 }
+
+/**
+ * Generate a text draft report using the stateless LLM Copilot API.
+ */
+export async function generateImagingDraft(
+  threadId: string,
+  doctorResult: any,
+  prompt?: string
+) {
+  const response = await fetch(`${getBackendBaseURL()}/api/threads/${threadId}/imaging-reports/generate-draft`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ doctor_result: doctorResult, prompt }),
+  });
+  if (!response.ok) throw new Error("Failed to generate report draft");
+  return response.json();
+}

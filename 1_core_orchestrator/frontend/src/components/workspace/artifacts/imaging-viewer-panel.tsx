@@ -59,17 +59,7 @@ export function ImagingViewerPanel({
     fetchImage();
   }, [threadId, report.image_path]);
 
-  // Build summary for re-judge
-  const handleReJudge = useCallback(() => {
-    const summaryParts = findings.map(
-      (f) => `${f.disease}(${(f.confidence * 100).toFixed(0)}%, ${f.location_cn || f.location || "未知"})`
-    );
-    const summary = `检出 ${findings.length} 个病灶: ${summaryParts.join(", ")}。医生结论: ${
-      conclusion === "normal" ? "正常" : conclusion === "abnormal" ? "异常" : "待定"
-    }。${doctorComment ? `备注: ${doctorComment}` : ""}`;
-    onReJudge?.(summary);
-    toast.success("已请求更新综合判断");
-  }, [findings, conclusion, doctorComment, onReJudge]);
+  // Re-Judge trigger removed in Phase 6: All re-judging now happens at the unified Dashboard level.
 
   const conclusionLabel = conclusion === "normal" ? "正常" : conclusion === "abnormal" ? "异常" : "待定";
   const conclusionColor = conclusion === "normal" ? "text-green-400" : conclusion === "abnormal" ? "text-amber-400" : "text-muted-foreground";
@@ -141,16 +131,6 @@ export function ImagingViewerPanel({
           <EditIcon className="w-3.5 h-3.5" />
           重新编辑
         </Button>
-        {onReJudge && (
-          <Button
-            size="sm"
-            onClick={handleReJudge}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5"
-          >
-            <RefreshCwIcon className="w-3.5 h-3.5" />
-            请求重新综合判断
-          </Button>
-        )}
       </div>
     </Artifact>
   );
