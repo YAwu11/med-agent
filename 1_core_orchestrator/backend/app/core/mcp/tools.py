@@ -10,10 +10,10 @@ from typing import Any
 
 from langchain_core.tools import BaseTool
 
-from deerflow.config.extensions_config import ExtensionsConfig
-from deerflow.config.paths import VIRTUAL_PATH_PREFIX, get_paths
-from deerflow.mcp.client import build_servers_config
-from deerflow.mcp.oauth import build_oauth_tool_interceptor, get_initial_oauth_headers
+from app.core.config.extensions_config import ExtensionsConfig
+from app.core.config.paths import VIRTUAL_PATH_PREFIX, get_paths
+from app.core.mcp.client import build_servers_config
+from app.core.mcp.oauth import build_oauth_tool_interceptor, get_initial_oauth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -76,20 +76,140 @@ def _translate_tool_args(kwargs: dict[str, Any]) -> dict[str, Any]:
 def _make_async_tool_wrapper(coro: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
     """Build an asynchronous wrapper for an asynchronous tool coroutine.
 
-    Translates virtual /mnt/ paths to host paths before invoking the tool.
+    Args:
+        coro: The tool's asynchronous coroutine.
+        tool_name: Name of the tool (for logging).
 
-    NOTE (ADR-012): The old `_maybe_intercept_hitl` blocking loop has been
-    removed. Report generation and Case DB sync is now handled by the
-    `save_analysis_result` tool which the Agent calls explicitly after
-    receiving MCP results. This allows the patient-side Agent to return
-    immediately instead of polling for doctor review.
+    Returns:
+        An asynchronous function that translates paths before calling the underlying coroutine.
     """
+
+async def _maybe_intercept_hitl(tool_name: str, result: Any, translated_kwargs: dict[str, Any]) -> Any:
+    """Check if the tool call should be intercepted for HITL review.
+    
+    IMPORTANT: MCP tools use response_format='content_and_artifact', so the
+    original `result` is a tuple: (content_list, artifact). We MUST return
+    data in the same tuple format, otherwise LangChain raises ValueError.
+    """
+    # MCP tools often have prefixes like 'server--tool', so use endswith
+    if not tool_name.endswith("analyze_xray"):
+        return result
+
+    try:
+        import asyncio
+        import json
+        import uuid
+        from app.core.config.paths import get_paths
+        
+        # Remember original format to preserve it on return
+        is_tuple = isinstance(result, tuple)
+        
+        # Extract the thread_id directly from the translated absolute file path
+        image_path = str(translated_kwargs.get("image_path", ""))
+        thread_id = None
+        parts = image_path.replace("\\", "/").split("/")
+        
+        if "threads" in parts and "user-data" in parts:
+            thread_idx = parts.index("threads")
+            if len(parts) > thread_idx + 1:
+                thread_id = parts[thread_idx + 1]
+            
+        if not thread_id:
+            logger.warning(f"[HITL-Auto] Could not extract thread_id from path: {image_path}")
+            return result
+
+        report_id = str(uuid.uuid4())[:8]
+        paths = get_paths()
+        paths.ensure_thread_dirs(thread_id)
+        reports_dir = paths.sandbox_user_data_dir(thread_id) / "imaging-reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        report_file = reports_dir / f"{report_id}.json"
+        
+        try:
+            # LangChain MCP tool coroutines return a tuple: (content, artifact)
+            # where content is a list of dicts: [{'type': 'text', 'text': '{"json": "here"}'}]
+            content = result[0] if is_tuple else result
+            
+            json_text = ""
+            if isinstance(content, list):
+                texts = []
+                for item in content:
+                    if hasattr(item, "text"):
+                        texts.append(item.text)
+                    elif isinstance(item, dict) and "text" in item:
+                        texts.append(item["text"])
+                    else:
+                        texts.append(str(item))
+                json_text = "\n".join(texts)
+            else:
+                json_text = str(content)
+
+            # Sometimes the returned text itself is a string representation of a list of dicts
+            # due to double casting. Safe extraction via eval if it looks like python literal
+            if json_text.startswith("([{") or json_text.startswith("[{"):
+                import ast
+                try:
+                    parsed = ast.literal_eval(json_text)
+                    if isinstance(parsed, tuple):
+                        parsed = parsed[0]
+                    if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+                        json_text = parsed[0].get("text", json_text)
+                except:
+                    pass
+
+            ai_result = json.loads(json_text)
+        except Exception as e:
+            logger.warning(f"[HITL-Auto] Failed to parse analysis result as JSON: {e}. Falling back to raw text.")
+            ai_result = {"raw_text": str(result)}
+            
+        report_data = {
+            "report_id": report_id,
+            "thread_id": thread_id,
+            "status": "pending_review",
+            "image_path": image_path,
+            "ai_result": ai_result,
+            "doctor_result": None,
+        }
+        report_file.write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info(f"[HITL-Auto] Intercepted {tool_name}. Report {report_id} written, blocking for doctor review...")
+        
+        # Poll until doctor submits review
+        poll_interval = 2.0
+        while True:
+            try:
+                if not report_file.exists():
+                    logger.error(f"[HITL-Auto] Report file {report_file} vanished during polling!")
+                    return result
+                    
+                data = json.loads(report_file.read_text(encoding="utf-8"))
+                if data.get("status") == "reviewed":
+                    logger.info(f"[HITL-Auto] Report {report_id} reviewed by doctor")
+                    reviewed_data = data.get("doctor_result") or data.get("ai_result", {})
+                    reviewed_json = json.dumps(reviewed_data, ensure_ascii=False)
+                    
+                    # CRITICAL: Preserve the original tuple format.
+                    # MCP tools use response_format='content_and_artifact'.
+                    # LangChain expects (content_str, artifact) — NOT a plain str.
+                    if is_tuple:
+                        return (reviewed_json, result[1] if len(result) > 1 else None)
+                    return reviewed_json
+            except Exception as e:
+                logger.warning(f"[HITL-Auto] Error reading report file: {e}")
+            
+            await asyncio.sleep(poll_interval)
+            
+    except Exception as e:
+        logger.error(f"[HITL-Auto] Critical failure in review interception: {e}", exc_info=True)
+        return result
+
+def _make_async_tool_wrapper(coro: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
+    """Build an asynchronous wrapper for an asynchronous tool coroutine."""
 
     async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
         translated_kwargs = _translate_tool_args(kwargs)
         try:
             result = await coro(*args, **translated_kwargs)
-            return result
+            return await _maybe_intercept_hitl(tool_name, result, translated_kwargs)
         except Exception as e:
             logger.error(f"Error invoking MCP tool '{tool_name}' via async wrapper: {e}", exc_info=True)
             raise
@@ -97,7 +217,7 @@ def _make_async_tool_wrapper(coro: Callable[..., Any], tool_name: str) -> Callab
     return async_wrapper
 
 def _make_sync_tool_wrapper(coro: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
-    """Build a synchronous wrapper for MCP tools with path translation."""
+    """Build a synchronous wrapper that also supports HITL interception."""
 
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         try:

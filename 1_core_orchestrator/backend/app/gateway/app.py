@@ -6,17 +6,17 @@ from fastapi import FastAPI
 
 from app.gateway.config import get_gateway_config
 from app.gateway.routers import (
-    agents,
     artifacts,
-    channels,
+    cases,
     imaging_reports,
     mcp,
-    memory,
     models,
+    settings_api,
     skills,
     suggestions,
     threads,
     uploads,
+    knowledge_proxy,
 )
 from deerflow.config.app_config import get_app_config
 
@@ -61,24 +61,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 2. Gateway and LangGraph Server are separate processes with independent caches
     # MCP tools are lazily initialized in LangGraph Server when first needed
 
-    # Start IM channel service if any channels are configured
-    try:
-        from app.channels.service import start_channel_service
+    # IM channel logic was removed for medical isolation
 
-        channel_service = await start_channel_service()
-        logger.info("Channel service started: %s", channel_service.get_status())
+    # Auto-seed sample cases on first run
+    try:
+        from app.gateway.services.seed_data import ensure_seed_cases
+        ensure_seed_cases()
     except Exception:
-        logger.exception("No IM channels configured or channel service failed to start")
+        logger.exception("Failed to seed cases")
 
     yield
-
-    # Stop channel service on shutdown
-    try:
-        from app.channels.service import stop_channel_service
-
-        await stop_channel_service()
-    except Exception:
-        logger.exception("Failed to stop channel service")
     logger.info("Shutting down API Gateway")
 
 
@@ -172,32 +164,16 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
     # MCP API is mounted at /api/mcp
     app.include_router(mcp.router)
 
-    # Memory API is mounted at /api/memory
-    app.include_router(memory.router)
-
-    # Skills API is mounted at /api/skills
+    # Included routers: models, mcp, skills, artifacts, uploads, threads, suggestions
     app.include_router(skills.router)
-
-    # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)
-
-    # Uploads API is mounted at /api/threads/{thread_id}/uploads
     app.include_router(uploads.router)
-
-    # Imaging reports API is mounted at /api/threads/{thread_id}/imaging-reports
-    app.include_router(imaging_reports.router)
-
-    # Thread cleanup API is mounted at /api/threads/{thread_id}
     app.include_router(threads.router)
-
-    # Agents API is mounted at /api/agents
-    app.include_router(agents.router)
-
-    # Suggestions API is mounted at /api/threads/{thread_id}/suggestions
     app.include_router(suggestions.router)
-
-    # Channels API is mounted at /api/channels
-    app.include_router(channels.router)
+    app.include_router(cases.router)
+    app.include_router(imaging_reports.router)
+    app.include_router(settings_api.router)
+    app.include_router(knowledge_proxy.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:

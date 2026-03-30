@@ -108,6 +108,7 @@ export function InputBox({
   isNewThread,
   threadId,
   initialValue,
+  submitLabel,
   onContextChange,
   onSubmit,
   onStop,
@@ -138,6 +139,7 @@ export function InputBox({
   ) => void;
   onSubmit?: (message: PromptInputMessage) => void;
   onStop?: () => void;
+  submitLabel?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const searchParams = useSearchParams();
@@ -740,11 +742,13 @@ export function InputBox({
             </ModelSelectorContent>
           </ModelSelector>
           <PromptInputSubmit
-            className="rounded-full"
+            className={cn("rounded-full", submitLabel && "w-auto px-3 gap-1.5")}
             disabled={disabled}
             variant="outline"
             status={status}
-          />
+          >
+            {submitLabel}
+          </PromptInputSubmit>
         </PromptInputTools>
       </PromptInputFooter>
       {isNewThread && searchParams.get("mode") !== "skill" && (
