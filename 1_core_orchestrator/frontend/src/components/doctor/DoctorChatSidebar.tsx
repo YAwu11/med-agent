@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { Stethoscope } from "lucide-react";
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import {
@@ -23,9 +23,11 @@ import { cn } from "@/lib/utils";
 
 interface DoctorChatSidebarProps {
   threadId: string;
+  pendingMessage?: string | null;
+  onPendingMessageConsumed?: () => void;
 }
 
-export function DoctorChatSidebar({ threadId: initialThreadId }: DoctorChatSidebarProps) {
+export function DoctorChatSidebar({ threadId: initialThreadId, pendingMessage, onPendingMessageConsumed }: DoctorChatSidebarProps) {
   const { t } = useI18n();
   const [settings, setSettings] = useLocalSettings();
 
@@ -71,6 +73,14 @@ export function DoctorChatSidebar({ threadId: initialThreadId }: DoctorChatSideb
     await thread.stop();
   }, [thread]);
 
+  // [Gap④] 自动发送来自 EvidenceDesk 的综合诊断请求
+  useEffect(() => {
+    if (pendingMessage && !thread.isLoading) {
+      void sendMessage(threadId, { text: pendingMessage, files: [] });
+      onPendingMessageConsumed?.();
+    }
+  }, [pendingMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
       <ChatBox threadId={threadId}>
@@ -104,6 +114,7 @@ export function DoctorChatSidebar({ threadId: initialThreadId }: DoctorChatSideb
                   isNewThread={isNewThread}
                   threadId={threadId}
                   autoFocus={isNewThread}
+                  globalDrop={false}
                   status={
                     thread.error
                       ? "error"

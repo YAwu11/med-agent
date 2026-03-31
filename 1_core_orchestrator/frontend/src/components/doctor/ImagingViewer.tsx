@@ -57,6 +57,9 @@ export interface McpAnalysisResult {
   findings: Finding[];
   model_version?: string;
   analyzed_at?: string;
+  ai_result?: any;
+  doctor_result?: any;
+  status?: string;
 }
 
 // ── Color System ───────────────────────────────────────────
@@ -142,6 +145,7 @@ export function ImagingViewer({
   );
   const [reportId, setReportId] = useState<string | null>(propReportId || null);
   const [isLoading, setIsLoading] = useState(!mcpResult && !initialStructuredData && !!threadId);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // State
   const [findings, setFindings] = useState<Finding[]>(data?.findings || []);
@@ -645,6 +649,39 @@ export function ImagingViewer({
       setHasUnsavedChanges(false);
     }
   };
+  const handleAnalyzeCV = useCallback(async () => {
+    if (!threadId) return;
+    setIsAnalyzing(true);
+    try {
+      const { getBackendBaseURL } = await import("@/core/config");
+      const res = await fetch(`${getBackendBaseURL()}/api/threads/${threadId}/imaging-reports/analyze-cv`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enable_sam: false, image_url: data?.image_path })
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.detail || "Analysis failed");
+      
+      setReportId(result.report_id);
+      setData(result.data);
+      setFindings(result.data.ai_result?.findings || []);
+      setHasUnsavedChanges(true); // AI just generated it, technically it's a new draft
+    } catch (e: any) {
+      alert(`AI 智能阅片失败: ${e.message}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [threadId]);
+
+  // 自动触发 AI 分析（有影像但无 AI 结果时，自动调用一次）
+  const autoAnalyzedRef = useRef(false);
+  useEffect(() => {
+    const hasBeenAnalyzed = data?.ai_result || data?.status === 'completed' || data?.status === 'pending_review' || data?.status === 'reviewed';
+    if (data?.image_path && !hasBeenAnalyzed && !isAnalyzing && !autoAnalyzedRef.current && !isLoading) {
+      autoAnalyzedRef.current = true;
+      handleAnalyzeCV();
+    }
+  }, [data?.image_path, data?.ai_result, data?.status, isAnalyzing, isLoading, handleAnalyzeCV]);
 
   const handleDownload = () => {
     const json = exportJson();
@@ -727,6 +764,22 @@ export function ImagingViewer({
             标注
           </button>
 
+          {/* AI Fast Path Button (Header) */}
+          <Button 
+            variant="default" 
+            size="sm" 
+            className="h-7 text-xs gap-1 bg-violet-600 hover:bg-violet-700 font-medium"
+            onClick={handleAnalyzeCV}
+            disabled={isAnalyzing}
+          >
+            {isAnalyzing ? (
+              <div className="h-3 w-3 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+            ) : (
+              <Bot className="h-3 w-3" />
+            )}
+            一键AI诊断
+          </Button>
+
           {/* Save / Download */}
           <Button
             variant="outline"
@@ -761,6 +814,15 @@ export function ImagingViewer({
           onMouseUp={handleMouseUp}
           onMouseLeave={() => { isPanning.current = false; }}
         >
+          {/* 正在分析中的加载指示器 */}
+          {isAnalyzing && (
+            <div className="absolute inset-0 z-40 bg-black/50 flex flex-col items-center justify-center pointer-events-none">
+              <div className="flex flex-col items-center gap-4 bg-black/60 backdrop-blur-sm px-8 py-6 rounded-2xl">
+                <div className="h-10 w-10 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+                <span className="text-white/90 text-sm font-medium">AI 正在分析影像...</span>
+              </div>
+            </div>
+          )}
           {/* ═══ Transform Layer: image + annotations move together ═══ */}
           <div
             ref={imageLayerRef}
@@ -771,15 +833,21 @@ export function ImagingViewer({
             }}
           >
             {/* X-Ray Image */}
-            <img
-              src={data?.image_path || ""}
-              alt="Medical Image"
-              className="w-full h-full object-contain select-none pointer-events-none"
-              draggable={false}
-              style={{
-                filter: `brightness(${brightness / 100}) contrast(${contrast / 100})`,
-              }}
-            />
+            {data?.image_path ? (
+              <img
+                src={data.image_path}
+                alt="Medical Image"
+                className="w-full h-full object-contain select-none pointer-events-none"
+                draggable={false}
+                style={{
+                  filter: `brightness(${brightness / 100}) contrast(${contrast / 100})`,
+                }}
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-white/40 text-sm">
+                暂无影像
+              </div>
+            )}
 
             {/* Annotation overlays — same layer as image, moves with zoom/pan */}
             {showAnnotations && findings.map(f => {

@@ -16,6 +16,7 @@ from app.gateway.models.case import (
     EvidenceItem,
     PatientInfo,
     Priority,
+    SubmitDiagnosisRequest,
 )
 from app.gateway.services import case_db
 
@@ -161,7 +162,7 @@ def ensure_seed_cases():
                 c5 = c
                 break
         case_db.update_case_status(c5.case_id, CaseStatus.IN_REVIEW)
-        case_db.submit_diagnosis(c5.case_id, __import__("app.gateway.models.case", fromlist=["SubmitDiagnosisRequest"]).SubmitDiagnosisRequest(
+        case_db.submit_diagnosis(c5.case_id, SubmitDiagnosisRequest(
             primary_diagnosis="慢性阻塞性肺疾病急性加重 (AECOPD)",
             secondary_diagnoses=["II型呼吸衰竭", "肺部感染"],
             treatment_plan="1. 抗感染：哌拉西林他唑巴坦 4.5g q8h IV\n2. 支气管扩张：雾化吸入沙丁胺醇+异丙托溴铵\n3. 糖皮质激素：甲泼尼龙 40mg qd IV\n4. 氧疗：鼻导管吸氧 2L/min",

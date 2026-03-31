@@ -2,26 +2,33 @@
 
 import React, { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { ShieldCheck, User, Image as ImageIcon, FileText, Activity, Loader2, CheckCircle2, Circle } from "lucide-react";
+import { ShieldCheck, User, Image as ImageIcon, FileText, Activity, Loader2, CheckCircle2, Circle, Plus, Sparkles, Trash2, Pencil, Eye, Columns2, AlignJustify } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchCase, type CaseData } from "@/core/api/cases";
 import { ImagingViewer } from "@/components/doctor/ImagingViewer";
+import { Streamdown } from "streamdown";
+import { streamdownPlugins } from "@/core/streamdown";
+import { LabMarkdownViewer } from "@/components/doctor/LabMarkdownViewer";
 
 interface EvidenceDeskProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   isReviewPassed: boolean;
   onReviewPass: () => void;
-  caseId?: string | null;  // When provided, fetch real data from API
+  caseId?: string | null;
+  onSynthesisDiagnosis?: (summaryText: string) => void;
 }
 
-export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewPass, caseId }: EvidenceDeskProps) {
+export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewPass, caseId, onSynthesisDiagnosis }: EvidenceDeskProps) {
   
   // ── API Data State ──────────────────────────────────
   const [caseData, setCaseData] = useState<CaseData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  
+  // ── Local Edit State for Patient Info (Gap) ──────────
+  const [localInfo, setLocalInfo] = useState<any>({});
 
   useEffect(() => {
     if (!caseId) return;
@@ -29,16 +36,29 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
     fetchCase(caseId)
       .then((data) => {
         setCaseData(data);
+        if (data?.patient_info) {
+          setLocalInfo(data.patient_info);
+        }
         // Auto-select first evidence tab if available
         if (data.evidence.length > 0) {
           onTabChange("vitals"); // Default to vitals overview
         }
       })
-      .catch((err) => {
-        console.warn("[EvidenceDesk] Failed to fetch case data, using mock:", err);
-        setCaseData(null);
-      })
       .finally(() => setIsLoading(false));
+
+    // Basic polling mechanism to keep evidence in sync, especially for patient uploads or async backend ops
+    const pollInterval = setInterval(() => {
+      fetchCase(caseId)
+        .then((data) => {
+          setCaseData(data);
+          // ⚠️ Note: We do NOT overwrite localInfo here to avoid destroying doctor's active form context
+        })
+        .catch((err) => {
+          console.warn("[EvidenceDesk] Polling failed:", err);
+        });
+    }, 5000);
+
+    return () => clearInterval(pollInterval);
   }, [caseId]);
 
   // Derive display values from API data or mock defaults
@@ -69,6 +89,138 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
     });
   };
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  // [Gap④] 综合诊断：拉取聚合摘要 → 注入 AI Chat
+  const handleSynthesisDiagnosis = async () => {
+    if (!caseId || !onSynthesisDiagnosis) return;
+    setIsSynthesizing(true);
+    try {
+      const { getBackendBaseURL } = await import("@/core/config");
+      const res = await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/summary`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      
+      const prompt = `请基于以下患者完整病历资料进行综合诊断分析，给出你的诊断意见、鉴别诊断、建议的进一步检查项目和初步治疗方案。\n\n---\n\n${data.summary}`;
+      onSynthesisDiagnosis(prompt);
+    } catch (err) {
+      console.error("[Gap④] Failed to fetch case summary:", err);
+    } finally {
+      setIsSynthesizing(false);
+    }
+  };
+
+  const uploadFiles = async (files: FileList | File[]) => {
+    const targetThreadId = caseData?.patient_thread_id || caseId;
+    if (!files || files.length === 0 || !caseId || !targetThreadId) {
+      console.warn("EvidenceDesk uploadFiles early return due to missing context", { files: files?.length, caseId, targetThreadId, caseData });
+      return;
+    }
+    setIsUploadingEvidence(true);
+    try {
+      const { getBackendBaseURL } = await import("@/core/config");
+      const formData = new FormData();
+      Array.from(files).forEach(f => formData.append("files", f));
+      
+      const uploadRes = await fetch(`${getBackendBaseURL()}/api/threads/${targetThreadId}/uploads`, {
+        method: "POST",
+        body: formData
+      });
+      const uploadData = await uploadRes.json();
+      
+      // 移除原有的手动 POST /evidence 逻辑，让后端的 _auto_sync_evidence 自动归档并提取 OCR 的动态标题
+      
+      // Refresh case to see new evidence
+      const { fetchCase: fetchCaseFresh } = await import("@/core/api/cases");
+      const data = await fetchCaseFresh(caseId);
+      setCaseData(data);
+    } catch (err) {
+      console.error("[Gap① Add Evidence] Failed to upload new evidence:", err);
+    } finally {
+      setIsUploadingEvidence(false);
+    }
+  };
+
+  const handleSidebarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) {
+      uploadFiles(e.target.files);
+    }
+    // refresh input so same file can be uploaded again if needed
+    e.target.value = "";
+  };
+
+  // ── Drag & Drop Handlers ─────────────────────────────
+  // 核心防止闪烁方案：外层容器负责开启拖拽，开启后由全屏的全覆盖遮罩接管所有后续事件
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+  
+  // onDragOver 在外层只做默认拦截，具体 drop 和 leave 交给 overlay 处理
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  };
+
+  // ── Patient Info Update Handler ────────────────────────
+  // To avoid race conditions and keystroke blocking, we use local state and a delayed patch.
+  const syncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  
+  const updatePatientInfo = async (field: string, value: string | number) => {
+    if (!caseId) return;
+    
+    // Optimistic update locally
+    setLocalInfo((prev: any) => ({ ...prev, [field]: value }));
+
+    // Debounce the PATCH to backend (500ms)
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(async () => {
+      try {
+        const { getBackendBaseURL } = await import("@/core/config");
+        await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/patient-info`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: value })
+        });
+      } catch (e) {
+        console.error("[Gap Update Patient Info] Failed:", e);
+      }
+    }, 500);
+  };
+
+  // ── Evidence Data Update Handler (HITL) ─────────────────
+  const evidenceSyncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  const updateEvidenceData = async (evidenceId: string, newStructuredData: any[]) => {
+    if (!caseId) return;
+
+    // Optimistically update local caseData so the UI immediately reflects it
+    // Note: OcrDocumentViewer already handles its local state safely, but we need 
+    // caseData.evidence[i].structured_data to be updated so flipping tabs doesn't lose it.
+    setCaseData((prev: any) => {
+      if (!prev) return prev;
+      const updatedEvidence = prev.evidence.map((ev: any) => 
+        ev.evidence_id === evidenceId ? { ...ev, structured_data: newStructuredData } : ev
+      );
+      return { ...prev, evidence: updatedEvidence };
+    });
+
+    if (evidenceSyncTimeoutRef.current) clearTimeout(evidenceSyncTimeoutRef.current);
+    evidenceSyncTimeoutRef.current = setTimeout(async () => {
+      try {
+        const { getBackendBaseURL } = await import("@/core/config");
+        await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/evidence/${evidenceId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ structured_data: newStructuredData })
+        });
+        console.log(`[HITL Sync] Evidence ${evidenceId} auto-saved`);
+      } catch (e) {
+        console.error("[HITL Sync] Failed to update evidence:", e);
+      }
+    }, 500);
+  };
 
   const handleReviewPassClick = async () => {
     if (!caseId) {
@@ -96,8 +248,35 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   
   const activeTabData = ALL_TABS.find(t => t.id === activeTab);
   
+  const handleDeleteEvidence = async (e: React.MouseEvent, evidenceId: string) => {
+    e.stopPropagation();
+    if (!caseId) return;
+    if (!confirm("确定要删除这项目前的文件吗？此操作无法撤销。")) return;
+    setIsLoading(true);
+    try {
+      const { getBackendBaseURL } = await import("@/core/config");
+      const res = await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/evidence/${evidenceId}`, {
+        method: "DELETE"
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP Error ${res.status}: Method Not Allowed or Server Error`);
+      }
+      const { fetchCase: fetchCaseFresh } = await import("@/core/api/cases");
+      const freshData = await fetchCaseFresh(caseId);
+      setCaseData(freshData);
+      if (activeTab === `ev_${evidenceId}`) {
+        onTabChange("vitals");
+      }
+    } catch (err) {
+      console.error("Delete evidence failed", err);
+      alert("删除失败，请重试");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
   // 提取一个公用的渲染左侧菜单按钮的小组件函数，保持代码整洁
-  const renderTab = (id: string, label: string, Icon: React.ElementType, isAlert = false) => {
+  const renderTab = (id: string, label: string, Icon: React.ElementType, isAlert = false, evidenceId?: string) => {
     const isActive = activeTab === id;
     const isReviewed = reviewedTabs.has(id);
     return (
@@ -105,18 +284,27 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
         <button
           onClick={() => onTabChange(id)}
           className={cn(
-            "flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ring-1",
+            "flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ring-1 min-w-0 text-left",
             isActive 
               ? "bg-blue-50 text-blue-700 shadow-sm ring-blue-200 font-semibold" 
               : "bg-transparent text-slate-600 hover:bg-slate-200/50 ring-transparent hover:text-slate-900 font-medium"
           )}
         >
-          <div className={cn("p-1.5 rounded-md", isActive ? "bg-white text-blue-600 shadow-sm" : "bg-white text-slate-400 border border-slate-200/50")}>
+          <div className={cn("p-1.5 rounded-md shrink-0", isActive ? "bg-white text-blue-600 shadow-sm" : "bg-white text-slate-400 border border-slate-200/50")}>
             <Icon className="h-4 w-4" />
           </div>
-          <span className="truncate">{label}</span>
-          {isAlert && !isReviewed && <span className="ml-auto w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>}
+          <span className="truncate flex-1">{label}</span>
+          {isAlert && !isReviewed && <span className="ml-auto w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0"></span>}
         </button>
+        {evidenceId && (
+          <button
+            onClick={(e) => handleDeleteEvidence(e, evidenceId)}
+            className="p-1.5 rounded-lg transition-all shrink-0 text-slate-300 hover:text-red-500 hover:bg-red-50"
+            title="删除这份报告"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); toggleReviewed(id); }}
           className={cn(
@@ -134,7 +322,36 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   };
 
   return (
-    <div className="flex w-full h-full flex-row relative bg-white overflow-hidden">
+    <div 
+      className={cn("flex h-full w-full bg-slate-50 relative", isDragging ? "ring-4 ring-blue-400 ring-inset" : "")}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+    >
+      {/* 拖拽上传遮罩 - 开启后接管所有事件防止冒泡导致闪烁 */}
+      {isDragging && (
+        <div 
+          className="absolute inset-0 z-50 flex items-center justify-center bg-blue-50/80 backdrop-blur-sm rounded-xl mx-2 my-2 transition-all"
+          onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDragging(false);
+            if (e.dataTransfer.files?.length) {
+              uploadFiles(e.dataTransfer.files);
+            }
+          }}
+        >
+          {/* pointer-events-none 确保鼠标在内部文本上方游走时不触发 leave 事件 */}
+          <div className="flex flex-col items-center justify-center p-12 bg-white/90 rounded-2xl shadow-2xl border-2 border-dashed border-blue-500 scale-105 transition-transform duration-200 pointer-events-none">
+            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mb-6 animate-bounce">
+              <Plus className="h-12 w-12 text-blue-600" />
+            </div>
+            <h3 className="text-2xl font-bold text-slate-800 mb-3 tracking-tight">松开鼠标上传作为证据</h3>
+            <p className="text-slate-500 font-medium">支持拖入图片、PDF及电子病历文件</p>
+          </div>
+        </div>
+      )}
+
       {/* 25% 左侧导航 - 临床证据归档 (Master List) */}
       <div className="w-[280px] shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col h-full z-10 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         <div className="px-5 py-4 border-b border-slate-200/60 flex items-center justify-between bg-white/50 backdrop-blur">
@@ -155,7 +372,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3 ml-2 flex items-center justify-between">
                 医学影像 <span className="text-[9px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded mr-2">{ALL_TABS.filter(t => t.type === "imaging").length}</span>
               </div>
-              {ALL_TABS.filter(t => t.type === "imaging").map(t => renderTab(t.id, t.label, ImageIcon, t.item?.is_abnormal))}
+              {ALL_TABS.filter(t => t.type === "imaging").map(t => renderTab(t.id, t.label, ImageIcon, t.item?.is_abnormal, t.item?.evidence_id))}
             </div>
           )}
 
@@ -164,9 +381,31 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3 ml-2 flex items-center justify-between">
                 化验单与检查 <span className="text-[9px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded mr-2">{ALL_TABS.filter(t => t.type === "lab" || t.type === "ecg" || t.type === "note").length}</span>
               </div>
-              {ALL_TABS.filter(t => t.type === "lab" || t.type === "ecg" || t.type === "note").map(t => renderTab(t.id, t.label, FileText, t.item?.is_abnormal))}
+              {ALL_TABS.filter(t => t.type === "lab" || t.type === "ecg" || t.type === "note").map(t => renderTab(t.id, t.label, FileText, t.item?.is_abnormal, t.item?.evidence_id))}
             </div>
           )}
+        </div>
+
+        {/* File Upload Contextual Action */}
+        <div className="px-3 py-4 border-t border-slate-200/60 bg-white/50 backdrop-blur mt-auto">
+          <input
+            type="file"
+            id="sidebarFileSelect"
+            className="hidden"
+            multiple
+            onChange={handleSidebarUpload}
+          />
+          <Button 
+            variant="outline" 
+            className="w-full justify-center gap-2 bg-white backdrop-blur border-blue-200 text-blue-600 hover:bg-blue-50 transition-all shadow-sm rounded-xl py-6"
+            onClick={() => document.getElementById('sidebarFileSelect')?.click()}
+            disabled={isUploadingEvidence}
+          >
+            <span className="inline-flex h-4 w-4 items-center justify-center">
+              {isUploadingEvidence ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            </span>
+            <span>{isUploadingEvidence ? "上传中..." : "补充医疗附件"}</span>
+          </Button>
         </div>
       </div>
 
@@ -174,10 +413,10 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
       <div className="flex-1 min-w-0 flex flex-col relative bg-slate-50/50">
         
         {/* 中心视野区 (Content Viewer) */}
-        <div className="flex-1 overflow-y-auto p-8 relative">
+        <div className="flex-1 overflow-y-auto relative">
         
         {activeTab === "vitals" && (
-          <div className="animate-in fade-in duration-300 flex flex-col h-full">
+          <div className="animate-in fade-in duration-300 flex flex-col h-full p-8 max-w-7xl mx-auto w-full">
             <div className="flex items-center justify-between mb-6 shrink-0">
               <h2 className="text-2xl font-semibold tracking-tight text-slate-800">Patient Vitals & History</h2>
               <div className="text-xs font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full flex items-center gap-2 border border-blue-100">
@@ -200,11 +439,48 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                      <User className="h-7 w-7" />
                   </div>
                   <div className="flex flex-col">
-                    <h3 className="text-xl font-bold text-slate-800 tracking-tight">{patientName}</h3>
-                    <div className="text-sm text-slate-500 font-medium mt-0.5">{patientAge}岁 · {patientSex === "男" ? "男性" : patientSex === "女" ? "女性" : patientSex ?? "N/A"}</div>
+                    <Input 
+                      className="p-0 h-auto border-none shadow-none text-xl font-bold tracking-tight text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal bg-transparent"
+                      value={localInfo?.name ?? ""}
+                      onChange={(e) => updatePatientInfo("name", e.target.value)}
+                      placeholder="姓名未登记"
+                    />
+                    <div className="flex items-center gap-1 text-sm text-slate-500 font-medium mt-0.5">
+                      <Input 
+                        className="w-12 h-5 p-0 border-none shadow-none focus-visible:ring-0 bg-transparent text-center"
+                        value={localInfo?.age ?? ""}
+                        onChange={(e) => updatePatientInfo("age", e.target.value ? parseInt(e.target.value) : "")}
+                        placeholder="--"
+                      />
+                      岁 · 
+                      <select 
+                        className="bg-transparent border-none focus:ring-0 text-slate-500 p-0 text-sm cursor-pointer"
+                        value={localInfo?.sex ?? ""}
+                        onChange={(e) => updatePatientInfo("sex", e.target.value)}
+                      >
+                        <option value="男">男性</option>
+                        <option value="女">女性</option>
+                        <option value="">未知</option>
+                      </select>
+                    </div>
                     <div className="flex items-center gap-2 mt-1.5">
-                       <span className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-bold text-slate-500 tracking-widest uppercase">ID: {caseData?.case_id?.slice(0, 8) ?? "Pt-2941"}</span>
-                       <span className="text-xs text-slate-500 font-medium">{caseData?.patient_info?.height_cm ?? 175}cm, {caseData?.patient_info?.weight_kg ?? 72}kg</span>
+                       <span className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-bold text-slate-500 tracking-widest uppercase truncate max-w-[80px]" title={caseData?.case_id}>ID: {caseData?.case_id?.slice(0, 8) ?? "Pt-2941"}</span>
+                       <div className="flex items-center text-xs text-slate-500 font-medium">
+                         <Input 
+                            className="w-10 h-5 p-0 border-none shadow-none focus-visible:ring-0 bg-transparent text-right"
+                            value={localInfo?.height_cm ?? ""}
+                            onChange={(e) => updatePatientInfo("height_cm", e.target.value)}
+                            onBlur={(e) => updatePatientInfo("height_cm", parseFloat(e.target.value) || 0)}
+                            placeholder="--"
+                          />cm, 
+                         <Input 
+                            className="w-10 h-5 p-0 border-none shadow-none focus-visible:ring-0 bg-transparent text-right ml-1"
+                            value={localInfo?.weight_kg ?? ""}
+                            onChange={(e) => updatePatientInfo("weight_kg", e.target.value)}
+                            onBlur={(e) => updatePatientInfo("weight_kg", parseFloat(e.target.value) || 0)}
+                            placeholder="--"
+                          />kg
+                       </div>
                     </div>
                   </div>
                 </div>
@@ -216,19 +492,19 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                   <div className="grid grid-cols-2 gap-3">
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">体温 (°C)</div>
-                       <Input readOnly className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={caseData?.patient_info?.temperature || ""} />
+                       <Input onChange={(e) => updatePatientInfo("temperature", e.target.value)} onBlur={(e) => updatePatientInfo("temperature", parseFloat(e.target.value) || 0)} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.temperature ?? ""} />
                      </div>
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">心率 (bpm)</div>
-                       <Input readOnly className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={caseData?.patient_info?.heart_rate || ""} />
+                       <Input onChange={(e) => updatePatientInfo("heart_rate", e.target.value ? parseInt(e.target.value) : "")} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.heart_rate ?? ""} />
                      </div>
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">血压 (mmHg)</div>
-                       <Input readOnly className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={caseData?.patient_info?.blood_pressure || ""} />
+                       <Input onChange={(e) => updatePatientInfo("blood_pressure", e.target.value)} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.blood_pressure ?? ""} />
                      </div>
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">血氧 (SpO2%)</div>
-                       <Input readOnly className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={caseData?.patient_info?.spo2 || ""} />
+                       <Input onChange={(e) => updatePatientInfo("spo2", e.target.value)} onBlur={(e) => updatePatientInfo("spo2", parseFloat(e.target.value) || 0)} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.spo2 ?? ""} />
                      </div>
                   </div>
                 </div>
@@ -238,35 +514,39 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               <div className="flex-1 space-y-4">
                 <div className="border border-slate-200 bg-white p-5 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
                   <label className="text-sm font-medium text-slate-600 mb-3 block">主诉 (Chief Complaint)</label>
-                  <Textarea readOnly 
+                  <Textarea 
                     className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-slate-800 font-bold placeholder:text-slate-300 placeholder:font-normal min-h-[40px]"
                     placeholder="未记录 (N/A)"
-                    value={caseData?.patient_info?.chief_complaint || ""}
+                    value={localInfo?.chief_complaint ?? ""}
+                    onChange={(e) => updatePatientInfo("chief_complaint", e.target.value)}
                   />
                 </div>
                 <div className="border border-slate-200 bg-white p-5 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
                   <label className="text-sm font-medium text-slate-600 mb-3 block">现病史 (Present Illness)</label>
-                  <Textarea readOnly
+                  <Textarea 
                     className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-slate-800 font-bold placeholder:text-slate-300 placeholder:font-normal min-h-[60px]"
                     placeholder="未录入具体现病史... (N/A)"
-                    value={caseData?.patient_info?.present_illness || ""}
+                    value={localInfo?.present_illness ?? ""}
+                    onChange={(e) => updatePatientInfo("present_illness", e.target.value)}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
                     <label className="text-sm font-medium text-slate-600 mb-2 block">既往史 (Medical History)</label>
-                    <Textarea readOnly
+                    <Textarea 
                       className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold placeholder:text-slate-300 placeholder:font-normal min-h-[40px]"
                       placeholder="未录入 (N/A)"
-                      value={caseData?.patient_info?.medical_history || ""}
+                      value={localInfo?.medical_history ?? ""}
+                      onChange={(e) => updatePatientInfo("medical_history", e.target.value)}
                     />
                   </div>
                   <div className="border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                    <label className="text-sm font-medium text-amber-600 mb-2 block">过敏与用药 (Allergies/Meds)</label>
-                    <Textarea readOnly
-                      className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold placeholder:text-amber-200 placeholder:font-normal min-h-[40px]"
-                      placeholder="未明示 (N/A)"
-                      value={caseData?.patient_info?.allergies || ""}
+                    <label className="text-sm font-medium text-slate-600 mb-2 block">过敏与用药 (Allergies & Meds)</label>
+                    <Textarea 
+                      className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold placeholder:text-slate-300 placeholder:font-normal min-h-[40px]"
+                      placeholder="无已知过敏史 (N/A)"
+                      value={localInfo?.allergies ?? ""}
+                      onChange={(e) => updatePatientInfo("allergies", e.target.value)}
                     />
                   </div>
                 </div>
@@ -297,18 +577,30 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
         )}
 
         {(activeTabData?.type === "lab" || activeTabData?.type === "ecg" || activeTabData?.type === "note") && (
-          <div className="animate-in fade-in duration-300 flex flex-col p-8 h-full bg-white border border-slate-200 rounded-xl m-8 shadow-sm overflow-y-auto">
-             <div className="flex justify-between items-center mb-6">
-               <h2 className="text-xl font-bold text-slate-800">{activeTabData.item?.title}</h2>
-               {activeTabData.item?.is_abnormal ? (
-                   <span className="bg-red-50 text-red-600 text-xs font-bold px-2 py-1 rounded">存在异常项</span>
-               ) : (
-                   <span className="bg-green-50 text-green-600 text-xs font-bold px-2 py-1 rounded">未见明显异常</span>
-               )}
-             </div>
-             <div className="bg-slate-50 p-6 rounded-lg border border-slate-100 whitespace-pre-wrap text-sm text-slate-700 font-mono">
-                {activeTabData.item?.ai_analysis || (activeTabData.item?.structured_data ? JSON.stringify(activeTabData.item?.structured_data, null, 2) : "无详细报告数据")}
-             </div>
+          <div className="animate-in fade-in duration-300 h-full flex-1 w-full bg-[#fdfbf7]">
+             {(() => {
+               const rawText = activeTabData.item?.ai_analysis || "";
+
+               if (!rawText) {
+                 return (
+                   <div className="flex flex-col items-center justify-center flex-1 h-full text-slate-400 py-12">
+                     <FileText className="h-12 w-12 mb-3 opacity-30" />
+                     <p className="text-sm font-medium">暂无分析数据</p>
+                     <p className="text-xs mt-1">上传文件后系统将自动进行提取识别</p>
+                   </div>
+                 );
+               }
+
+               return (
+                 <LabMarkdownViewer 
+                   rawText={rawText}
+                   title={activeTabData.item?.title}
+                   isAbnormal={activeTabData.item?.is_abnormal}
+                   evidenceId={activeTabData.item?.evidence_id}
+                   caseId={caseId}
+                 />
+               );
+             })()}
           </div>
         )}
         </div>
@@ -325,6 +617,18 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                  <div key={t.id} className={cn("w-2 h-2 rounded-full transition-colors", reviewedTabs.has(t.id) ? "bg-emerald-500" : "bg-slate-200")} />
                ))}
              </div>
+             {/* [Gap④] 综合诊断按钮 */}
+             {onSynthesisDiagnosis && (
+               <Button
+                 size="lg"
+                 onClick={handleSynthesisDiagnosis}
+                 disabled={isSynthesizing || !caseId}
+                 className="px-6 py-6 text-base rounded-full font-semibold bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 gap-2"
+               >
+                 {isSynthesizing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
+                 {isSynthesizing ? "汇总中..." : "一键综合诊断"}
+               </Button>
+             )}
              <Button 
                 size="lg"
                 onClick={handleReviewPassClick}

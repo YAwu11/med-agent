@@ -238,6 +238,56 @@ def add_evidence(case_id: str, req: AddEvidenceRequest) -> Case | None:
     return case
 
 
+def update_evidence_data(case_id: str, evidence_id: str, updates: dict) -> Case | None:
+    """Update specific fields of an existing evidence item within a case."""
+    case = get_case(case_id)
+    if case is None:
+        return None
+
+    updated = False
+    for item in case.evidence:
+        if item.evidence_id == evidence_id:
+            for k, v in updates.items():
+                if hasattr(item, k):
+                    setattr(item, k, v)
+                    updated = True
+            break
+            
+    if updated:
+        case.updated_at = datetime.now(timezone.utc)
+        with _lock:
+            conn = _get_conn()
+            conn.execute(
+                "UPDATE cases SET data = ?, updated_at = ? WHERE case_id = ?",
+                (case.model_dump_json(), case.updated_at.isoformat(), case_id),
+            )
+            conn.commit()
+    return case
+
+
+def remove_evidence(case_id: str, evidence_id: str) -> Case | None:
+    """Remove an evidence item from a case by its ID."""
+    case = get_case(case_id)
+    if case is None:
+        return None
+
+    initial_len = len(case.evidence)
+    case.evidence = [item for item in case.evidence if item.evidence_id != evidence_id]
+    
+    if len(case.evidence) == initial_len:
+        return None  # No matching evidence found to remove
+
+    case.updated_at = datetime.now(timezone.utc)
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE cases SET data = ?, updated_at = ? WHERE case_id = ?",
+            (case.model_dump_json(), case.updated_at.isoformat(), case_id),
+        )
+        conn.commit()
+    return case
+
+
 def update_patient_info(thread_id: str, info_dict: dict) -> Case | None:
     """Update patient info on an existing Case. Returns None if no Case exists.
     

@@ -41,7 +41,7 @@ class EvidenceItem(BaseModel):
 
     # Raw data references
     file_path: str | None = None
-    structured_data: dict[str, Any] | None = None
+    structured_data: list[Any] | dict[str, Any] | None = None
     ai_analysis: str | None = None
 
     # Doctor annotations
@@ -122,7 +122,7 @@ class AddEvidenceRequest(BaseModel):
     title: str
     source: Literal["patient_upload", "ai_generated", "doctor_input"] = "patient_upload"
     file_path: str | None = None
-    structured_data: dict[str, Any] | None = None
+    structured_data: list[Any] | dict[str, Any] | None = None
     ai_analysis: str | None = None
     is_abnormal: bool = False
 
@@ -136,6 +136,12 @@ class SubmitDiagnosisRequest(BaseModel):
 
 class UpdateStatusRequest(BaseModel):
     status: CaseStatus
+
+class UpdateEvidenceRequest(BaseModel):
+    """Doctor-side partial update for a specific evidence item."""
+    structured_data: list[Any] | dict[str, Any] | None = None
+    ai_analysis: str | None = None
+    is_abnormal: bool | None = None
 
 
 class UpdatePatientInfoRequest(BaseModel):

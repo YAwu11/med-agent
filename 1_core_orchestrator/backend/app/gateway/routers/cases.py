@@ -147,6 +147,34 @@ async def add_evidence(case_id: str, req: AddEvidenceRequest):
     return {"status": "ok", "total_evidence": len(case.evidence)}
 
 
+from app.gateway.models.case import UpdateEvidenceRequest
+
+@router.patch("/cases/{case_id}/evidence/{evidence_id}")
+async def update_evidence(case_id: str, evidence_id: str, req: UpdateEvidenceRequest):
+    """Update specific fields of an existing evidence item."""
+    update_dict = req.model_dump(exclude_none=True)
+    if not update_dict:
+        raise HTTPException(status_code=400, detail="No fields to update")
+        
+    case = case_db.update_evidence_data(case_id, evidence_id, update_dict)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} or evidence {evidence_id} not found")
+        
+    _broadcast_event("evidence_updated", {"case_id": case_id, "evidence_id": evidence_id})
+    return case.model_dump()
+
+
+@router.delete("/cases/{case_id}/evidence/{evidence_id}")
+async def delete_evidence(case_id: str, evidence_id: str):
+    """Delete a specific evidence item from a case."""
+    case = case_db.remove_evidence(case_id, evidence_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} or evidence {evidence_id} not found")
+        
+    _broadcast_event("evidence_deleted", {"case_id": case_id, "evidence_id": evidence_id})
+    return {"status": "ok", "message": "Evidence deleted successfully", "case": case.model_dump()}
+
+
 # ── Diagnosis ──────────────────────────────────────────────
 
 @router.put("/cases/{case_id}/diagnosis")
@@ -168,6 +196,89 @@ async def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest):
 async def get_doctor_stats():
     """Aggregate statistics for the doctor dashboard."""
     return case_db.get_stats()
+
+
+# ── Case Summary for AI Synthesis (Gap④) ──────────────────
+
+@router.get("/cases/{case_id}/summary")
+async def get_case_summary(case_id: str):
+    """[Gap④] 聚合病例所有信息，生成结构化摘要供 AI 综合诊断消费。
+
+    将 patient_info、所有 evidence（含 OCR 文本、影像审核 JSON）、
+    医生批注等汇总为一段完整的 Markdown 文本，前端可直接注入到 AI Chat。
+    """
+    case = case_db.get_case(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+
+    p = case.patient_info
+    sections = []
+
+    # 1. 患者基本信息
+    sections.append("## 患者基本信息")
+    info_lines = []
+    if p.name: info_lines.append(f"- 姓名: {p.name}")
+    if p.age: info_lines.append(f"- 年龄: {p.age}岁")
+    if p.sex: info_lines.append(f"- 性别: {p.sex}")
+    if p.height_cm: info_lines.append(f"- 身高: {p.height_cm}cm")
+    if p.weight_kg: info_lines.append(f"- 体重: {p.weight_kg}kg")
+    sections.append("\n".join(info_lines) if info_lines else "- 无基本信息")
+
+    # 2. 生命体征
+    vitals = []
+    if p.temperature: vitals.append(f"- 体温: {p.temperature}°C")
+    if p.heart_rate: vitals.append(f"- 心率: {p.heart_rate} bpm")
+    if p.blood_pressure: vitals.append(f"- 血压: {p.blood_pressure} mmHg")
+    if p.spo2: vitals.append(f"- 血氧: {p.spo2}%")
+    if vitals:
+        sections.append("## 生命体征")
+        sections.append("\n".join(vitals))
+
+    # 3. 病史
+    if p.chief_complaint:
+        sections.append(f"## 主诉\n{p.chief_complaint}")
+    if p.present_illness:
+        sections.append(f"## 现病史\n{p.present_illness}")
+    if p.medical_history:
+        sections.append(f"## 既往史\n{p.medical_history}")
+    if p.allergies:
+        sections.append(f"## 过敏与用药\n{p.allergies}")
+
+    # 4. 临床证据汇总
+    if case.evidence:
+        sections.append(f"## 临床证据 ({len(case.evidence)} 项)")
+        for i, ev in enumerate(case.evidence, 1):
+            ev_header = f"### {i}. [{ev.type.upper()}] {ev.title}"
+            if ev.is_abnormal:
+                ev_header += " ⚠️ 异常"
+            sections.append(ev_header)
+
+            if ev.ai_analysis:
+                sections.append(f"**AI 分析结果:**\n{ev.ai_analysis}")
+            if ev.structured_data:
+                # 紧凑展示 JSON，避免过长
+                import json as _json
+                sections.append(f"**结构化数据:**\n```json\n{_json.dumps(ev.structured_data, ensure_ascii=False, indent=2)}\n```")
+            if ev.doctor_annotation:
+                sections.append(f"**医生批注:** {ev.doctor_annotation}")
+
+    # 5. 已有诊断（如有）
+    if case.diagnosis:
+        sections.append("## 已有诊断结论")
+        sections.append(f"- 主诊断: {case.diagnosis.primary_diagnosis}")
+        if case.diagnosis.secondary_diagnoses:
+            sections.append(f"- 次要诊断: {', '.join(case.diagnosis.secondary_diagnoses)}")
+        if case.diagnosis.treatment_plan:
+            sections.append(f"- 治疗方案: {case.diagnosis.treatment_plan}")
+
+    summary_text = "\n\n".join(sections)
+
+    return {
+        "case_id": case_id,
+        "summary": summary_text,
+        "evidence_count": len(case.evidence),
+        "has_diagnosis": case.diagnosis is not None,
+    }
 
 
 # ── SSE Real-Time Stream ──────────────────────────────────

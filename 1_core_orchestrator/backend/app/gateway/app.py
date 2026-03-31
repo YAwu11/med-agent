@@ -49,10 +49,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if vision_cfg.get("enabled", False):
         try:
             from app.gateway.services.vision_gateway import warmup
-
+            from app.gateway.services.analyzers import register_all
+            
             warmup()
+            register_all()
+            logger.info("Analyzer registry initialized")
         except Exception:
-            logger.exception("Chinese-CLIP 模型预热失败，视觉管道将不可用")
+            logger.exception("Chinese-CLIP 模型或分析器注册失败，视觉管道将不可用")
 
     config = get_gateway_config()
     logger.info(f"Starting API Gateway on {config.host}:{config.port}")

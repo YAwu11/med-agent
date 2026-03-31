@@ -10,15 +10,39 @@
 """
 
 
-def format_to_markdown(ocr_json: dict) -> str:
+def format_to_markdown(ocr_json: dict | list) -> str:
     """将百度 OCR 原始 JSON 转换为 Markdown 表格。
 
     Args:
-        ocr_json: 百度 medical_report_detection 返回的 JSON
+        ocr_json: 百度 medical_report_detection 返回的 JSON 或 PaddleOCR-VL 返回的 list
 
     Returns:
         Markdown 格式的化验单表格文本
     """
+    if isinstance(ocr_json, list):
+        # 兼容 PaddleOCR 数组结构
+        lines = ["## 结构化医疗报告\n"]
+        for block in ocr_json:
+            b_type = block.get("type", "")
+            res = block.get("res", {})
+            
+            if not isinstance(res, dict):
+                # 容错：res 可能是纯字符串
+                if isinstance(res, str):
+                    lines.append(f"{res}\n")
+                continue
+
+            if b_type == "title":
+                lines.append(f"### {res.get('text', '')}\n")
+            elif b_type == "table":
+                # 表格直接用 HTML
+                lines.append(f"{res.get('html', '')}\n")
+            elif b_type == "text":
+                lines.append(f"{res.get('text', '')}\n")
+        
+        lines.append("")
+        lines.append("> ⚠️ 以上内容由视觉语言模型 (VLM) 自动识别，仅供参考。请以证实影像为准。")
+        return "\n".join(lines)
     # 百度 OCR 数据结构： {"words_result": {"Item": [[{...}, {...}], ...]}}
     words_result = ocr_json.get("words_result", {})
     items = words_result.get("Item") or words_result.get("item")

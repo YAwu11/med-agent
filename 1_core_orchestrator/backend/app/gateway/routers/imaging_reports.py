@@ -149,79 +149,232 @@ class GenerateDraftRequest(BaseModel):
     prompt: str | None = None
 
 
+class AnalyzeCVRequest(BaseModel):
+    image_url: str | None = None
+    enable_sam: bool = False
+
+
 @router.post("/analyze-cv")
-async def stateless_analyze_cv(thread_id: str):
+async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None = None):
     """
     [Phase 6 Stateless Endpoint] 
-    Bypass LangGraph and run CV model (YOLO/DenseNet) directly on the uploaded image.
-    Currently returns mock deterministic JSON to unblock frontend.
+    Bypass LangGraph and run CV model (YOLO/DenseNet) directly on the uploaded image via MCP SSE.
     """
     import asyncio
     import uuid
-    import time
+    import httpx
     
-    # Simulate CV processing latency
-    await asyncio.sleep(1.5)
+    report_id = f"cv_{uuid.uuid4().hex[:8]}"
+    reports_dir = _get_reports_dir(thread_id)
     
-    report_id = f"mock_cv_{uuid.uuid4().hex[:8]}"
-    mock_data = {
+    # 1. Resolve image path
+    image_url = payload.image_url if payload else None
+    
+    # Check if this thread has an existing case with an imaging evidence item to default to
+    if not image_url:
+        existing_case = get_case_by_thread(thread_id)
+        if existing_case and existing_case.evidence:
+            for item in existing_case.evidence:
+                if item.type == "imaging" and item.file_path:
+                    image_url = item.file_path
+                    break
+    
+    local_image_path = ""
+    if image_url:
+        import urllib.parse
+        decoded_url = urllib.parse.unquote(image_url)
+        
+        if decoded_url.startswith(f"/api/threads/{thread_id}/artifacts/"):
+            virtual_path = decoded_url.split(f"/api/threads/{thread_id}/artifacts/", 1)[1]
+            try:
+                host_path = get_paths().resolve_virtual_path(thread_id, virtual_path)
+                if host_path.exists():
+                    local_image_path = str(host_path.absolute())
+            except ValueError as e:
+                logger.warning(f"Failed to resolve artifact path {virtual_path}: {e}")
+        elif decoded_url.startswith("/mnt/user-data/"):
+            try:
+                host_path = get_paths().resolve_virtual_path(thread_id, decoded_url)
+                if host_path.exists():
+                    local_image_path = str(host_path.absolute())
+            except ValueError as e:
+                logger.warning(f"Failed to resolve virtual path {decoded_url}: {e}")
+        elif decoded_url.startswith("http"):
+            # Download to a temporary sandbox path
+            target_path = reports_dir / f"img_{report_id}.png"
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(image_url) # Fetch original encoded URL
+                resp.raise_for_status()
+                target_path.write_bytes(resp.content)
+                local_image_path = str(target_path.absolute())
+        elif Path(decoded_url).exists():
+            local_image_path = str(Path(decoded_url).absolute())
+        
+    if not local_image_path:
+        raise HTTPException(status_code=400, detail=f"Valid image_url is required or image not found locally: {image_url}")
+
+    # Check if a report already exists for this image (from parallel analyzer)
+    image_filename = Path(local_image_path).name
+    if reports_dir.exists():
+        for report_file in reports_dir.glob("*.json"):
+            try:
+                report_data = json.loads(report_file.read_text(encoding="utf-8"))
+                db_image_path = report_data.get("image_path", "")
+                if db_image_path and Path(db_image_path).name == image_filename:
+                    logger.info(f"[HITL] Using existing report found for {image_filename}")
+                    
+                    # Ensure it's synced to DB
+                    from app.gateway.services.case_db import sync_report_from_file
+                    synced_report = sync_report_from_file(thread_id, report_file)
+                    
+                    if synced_report:
+                        return {"status": "ok", "report_id": synced_report["report_id"], "data": synced_report}
+            except Exception as e:
+                logger.warning(f"Failed to check existing report {report_file}: {e}")
+
+    # 2. Call MCP Vision Service
+    from mcp.client.sse import sse_client
+    from mcp.client.session import ClientSession
+    
+    enable_sam = payload.enable_sam if payload else False
+    logger.info(f"[HITL] Calling MCP Vision via SSE for {local_image_path}")
+    
+    try:
+        async with sse_client("http://127.0.0.1:8002/sse") as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                mcp_result = await session.call_tool("analyze_xray", {
+                    "image_path": local_image_path,
+                    "enable_sam": enable_sam
+                })
+                
+                ai_data_str = mcp_result.content[0].text
+                ai_result_raw = json.loads(ai_data_str)
+                
+                if "error" in ai_result_raw:
+                    raise HTTPException(status_code=500, detail=ai_result_raw["error"])
+                
+                # Format to our system's expected ai_result structure
+                formatted_ai_result = {
+                    "findings": ai_result_raw.get("findings", []),
+                    "densenet_probs": ai_result_raw.get("summary", {}).get("disease_probabilities", {})
+                }
+    except Exception as e:
+        logger.error(f"[HITL] MCP Call Failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Vision model analysis failed: {str(e)}")
+        
+    # 3. Save draft to sandbox
+    generated_data = {
         "report_id": report_id,
         "thread_id": thread_id,
         "status": "pending_review",
         "version": 1,
-        "image_path": "mock_xray.png",
-        "ai_result": {
-            "findings": [
-                {
-                    "id": "ai_finding_1",
-                    "disease": "Pneumonia",
-                    "location_cn": "右下肺",
-                    "bbox": [500, 300, 700, 500],
-                    "confidence": 0.85
-                }
-            ],
-            "densenet_probs": {
-                "Pneumothorax": 0.12,
-                "Cardiomegaly": 0.05,
-                "Effusion": 0.34
-            }
-        },
+        "image_path": image_url, # Keep original URL/path for frontend reference
+        "ai_result": formatted_ai_result,
         "doctor_result": {}
     }
     
-    # Save the generated CV draft to the file system
-    reports_dir = _get_reports_dir(thread_id)
     report_file = reports_dir / f"{report_id}.json"
-    report_file.write_text(json.dumps(mock_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_file.write_text(json.dumps(generated_data, ensure_ascii=False, indent=2), encoding="utf-8")
     
-    return {"status": "ok", "report_id": report_id, "data": mock_data}
+    logger.info(f"[HITL] Analysis complete. Saved to {report_file.name}")
+    return {"status": "ok", "report_id": report_id, "data": generated_data}
 
 
 @router.post("/generate-draft")
 async def generate_text_draft(thread_id: str, request: GenerateDraftRequest):
     """
-    [Phase 6 Stateless Endpoint]
-    A fast Copilot endpoint that takes the doctor's JSON + instructions and returns a readable text report.
-    No memory, no LangGraph loop.
+    [Phase 6 Stateless / Gap③]
+    Takes the doctor's reviewed JSON + optional instructions, calls SiliconFlow LLM
+    to generate a readable radiology report. No memory, no LangGraph loop.
     """
-    import asyncio
-    
-    # Simulate LLM generation latency
-    await asyncio.sleep(2.0)
-    
-    # Simulated response incorporating doctor's requested focus
-    focus_str = f"重点关注: {request.prompt}。" if request.prompt else ""
+    import os
+    import httpx
+
     findings = request.doctor_result.get("findings", [])
-    finding_summary = "、".join([f"{f.get('location_cn', '某处')}{f.get('disease', '异常')}" for f in findings])
-    
-    report_text = f"""[AI 放射影像学描述草稿]
-    
-根据提供的影像与医师圈注特征：
-观察到 {finding_summary if finding_summary else "未见明显明显结节或肿块影"}。
-{focus_str}双侧胸廓对称，纵隔居中，心影大小形态在正常范围内。双侧膈面光整，肋膈角锐利。
+    densenet_probs = request.doctor_result.get("densenet_probs", {})
 
-[印象]：
-请结合临床症状，建议随诊复查。
-"""
+    # 构造结构化的影像学描述素材
+    finding_lines = []
+    for f in findings:
+        loc = f.get("location_cn", f.get("name", "未知区域"))
+        disease = f.get("disease", f.get("name", "异常"))
+        conf = f.get("confidence", 0)
+        source = f.get("source", "ai")
+        note = f.get("note", "")
+        finding_lines.append(
+            f"- {loc}: {disease} (置信度 {conf}%, 来源: {'AI' if source == 'ai' else '医生标注'})"
+            + (f" 备注: {note}" if note else "")
+        )
 
+    prob_lines = []
+    for disease_name, prob in sorted(densenet_probs.items(), key=lambda x: -x[1]):
+        if prob > 0.05:  # 只展示概率 >5% 的
+            prob_lines.append(f"- {disease_name}: {prob*100:.1f}%")
+
+    user_prompt = f"""请根据以下影像检查结果，撰写一份规范的放射影像学报告。
+
+## 影像发现 (Findings)
+{chr(10).join(finding_lines) if finding_lines else "未检出明显异常"}
+
+## DenseNet 疾病概率预测
+{chr(10).join(prob_lines) if prob_lines else "无概率预测数据"}
+
+{f"## 医生补充指示{chr(10)}{request.prompt}" if request.prompt else ""}
+
+请按以下格式输出：
+1. **影像学描述**：客观描述所见异常
+2. **印象**：给出诊断意见
+3. **建议**：后续检查或随诊建议
+
+注意：保持专业、客观、简洁。"""
+
+    system_prompt = """你是一名资深放射科医师助手。你的任务是根据 AI 影像分析结果和医生的审核标注，
+生成规范的中文放射影像学报告。语言必须使用标准的医学术语，格式清晰易读。
+不要添加与影像发现无关的内容。"""
+
+    # 调用 SiliconFlow API
+    api_key = os.environ.get("SILICONFLOW_API_KEY", "")
+    if not api_key:
+        # 尝试从 config.yaml 读取
+        try:
+            from deerflow.config.app_config import get_app_config
+            cfg = get_app_config()
+            for m in getattr(cfg, "models", []):
+                if hasattr(m, "api_key") and m.api_key:
+                    api_key = m.api_key
+                    break
+        except Exception:
+            pass
+
+    if not api_key:
+        raise HTTPException(status_code=500, detail="SILICONFLOW_API_KEY not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.siliconflow.cn/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "Qwen/Qwen3.5-35B-A3B",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 2048,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            report_text = data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        logger.error(f"[Gap③] LLM draft generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"报告生成失败: {str(e)}")
+
+    logger.info(f"[Gap③] Generated draft report for thread {thread_id}, {len(report_text)} chars")
     return {"status": "ok", "report_text": report_text}

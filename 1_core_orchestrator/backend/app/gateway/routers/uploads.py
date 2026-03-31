@@ -25,80 +25,17 @@ from deerflow.uploads.manager import (
     upload_virtual_path,
 )
 from deerflow.utils.file_conversion import CONVERTIBLE_EXTENSIONS, convert_file_to_markdown
+from app.gateway.services.analyzer_registry import AnalysisResult
+from app.gateway.services.parallel_analyzer import analyze_batch
 
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
+# 文件类型 → Evidence 类型映射（非图像文件根据扩展名推断）
+_DOC_EXTS = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xls", ".xlsx"}
+
 router = APIRouter(prefix="/api/threads/{thread_id}/uploads", tags=["uploads"])
-
-
-# ── [ADR-021] MCP Vision Engine 直调辅助函数 ──────────────────────
-# 在上传管线中直接调用 MCP Vision 引擎进行影像分析，
-# 避免经过 Agent → MCP Client 的间接路径，节省 5+ 秒的 LLM 调用开销。
-
-async def _call_mcp_analyze(image_path: str, thread_id: str, filename: str) -> dict | None:
-    """直接调用 MCP Vision 引擎分析影像并将结果写入沙箱。
-
-    使用 import engine 直接在进程内调用（方案 B），
-    不走 MCP SSE 网络协议。由于 uploads 路由的 for 循环是顺序的，
-    不会出现 GPU 并发竞争。
-
-    Args:
-        image_path: 待分析影像的绝对路径
-        thread_id: 患者会话 ID，用于定位沙箱目录
-        filename: 原始文件名，用于日志
-
-    Returns:
-        MCP 引擎返回的结构化分析结果 dict，失败时返回 None
-    """
-    # 将 MCP 服务目录加入 sys.path（仅首次，惰性加载）
-    mcp_dir = Path(__file__).resolve().parents[4] / "3_mcp_medical_vision" / "mcp_chest_xray"
-    if str(mcp_dir) not in sys.path:
-        sys.path.insert(0, str(mcp_dir))
-
-    # 惰性导入 engine 模块（首次调用时会加载模型权重）
-    import engine as vision_engine  # noqa: E402
-
-    logger.info(f"[ADR-021] 开始自动 MCP 分析: {filename}")
-
-    # 在线程池中执行 GPU 推理，不阻塞事件循环
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, lambda: vision_engine.analyze(image_path, enable_sam=False)
-    )
-
-    if not result:
-        logger.warning(f"[ADR-021] MCP 引擎返回空结果: {filename}")
-        return None
-
-    # 将分析结果写入沙箱（复用 save_analysis_result 的文件格式，保持一致性）
-    report_id = str(uuid.uuid4())[:8]
-    paths = get_paths()
-    reports_dir = paths.sandbox_user_data_dir(thread_id) / "imaging-reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    report_file = reports_dir / f"{report_id}.json"
-
-    report_data = {
-        "report_id": report_id,
-        "thread_id": thread_id,
-        "status": "pending_review",
-        "image_path": image_path,
-        "ai_result": result,
-        "doctor_result": None,
-    }
-    report_file.write_text(
-        json.dumps(report_data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    total_findings = result.get("summary", {}).get("total_findings", 0)
-    logger.info(
-        f"[ADR-021] MCP 自动分析完成: {filename} → report_id={report_id}, "
-        f"findings={total_findings}"
-    )
-    return result
-
 
 class UploadResponse(BaseModel):
     """Response model for file upload."""
@@ -174,111 +111,137 @@ async def upload_files(
 
             uploaded_files.append(file_info)
 
-            # ── P2: 视觉管道（受 vision.enabled 开关控制） ──
-            file_ext = file_path.suffix.lower()
-            vision_cfg = getattr(get_app_config(), "vision", None) or {}
-            vision_enabled = vision_cfg.get("enabled", False)
-
-            if file_ext in IMAGE_EXTS and vision_enabled:
-                try:
-                    from app.gateway.services.vision_gateway import (
-                        classify_image,
-                        enhance_lab_report,
-                        enhance_medical_imaging,
-                    )
-
-                    classification = await classify_image(str(file_path))
-                    confidence = classification["confidence"]
-                    file_info["image_type"] = classification["category"]
-                    file_info["image_confidence"] = str(confidence)
-
-                    # 写入分类结果 sidecar 文件，保证多次会话/重载时不丢失类型信息
-                    import json
-                    meta_path = uploads_dir / f"{safe_filename}.meta.json"
-                    meta_path.write_text(json.dumps({
-                        "image_type": classification["category"], 
-                        "image_confidence": confidence
-                    }), encoding="utf-8")
-
-                    outputs_dir = get_paths().sandbox_outputs_dir(thread_id)
-                    outputs_dir.mkdir(parents=True, exist_ok=True)
-                    enhanced_name = f"enhanced_{safe_filename}"
-                    enhanced_host = str(outputs_dir / enhanced_name)
-
-                    if classification["category"] == "lab_report":
-                        # 步骤1: 增强（检查文件是否仍存在）
-                        if not file_path.exists():
-                            logger.warning(f"文件已被删除，跳过增强: {file_path}")
-                            continue
-                        await asyncio.to_thread(
-                            enhance_lab_report, str(file_path), enhanced_host
-                        )
-                        file_info["enhanced_path"] = f"/mnt/user-data/outputs/{enhanced_name}"
-
-                        # 步骤2: 百度 OCR（使用原始图片，增强版仅供前端展示）
-                        from app.gateway.services.baidu_ocr import fetch_medical_report_ocr
-
-                        raw_json = await fetch_medical_report_ocr(str(file_path))
-                        logger.info(f"百度 OCR 原始返回 ({safe_filename}): 包含 {len(raw_json.get('Item', raw_json.get('item', [])))} 项" if raw_json else f"百度 OCR 返回 None ({safe_filename})")
-
-                        # 步骤3: JSON → Markdown + 写 sidecar 文件
-                        from app.gateway.services.ocr_formatter import format_to_markdown
-
-                        clean_md = format_to_markdown(raw_json or {})
-                        sidecar_path = uploads_dir / f"{safe_filename}.ocr.md"
-                        sidecar_path.write_text(clean_md, encoding="utf-8")
-                        logger.info(f"OCR sidecar 已写入: {sidecar_path}")
-
-                    elif classification["category"] == "medical_imaging":
-                        # 步骤1: CLAHE 增强
-                        if not file_path.exists():
-                            logger.warning(f"文件已被删除，跳过增强: {file_path}")
-                            continue
-                        await asyncio.to_thread(
-                            enhance_medical_imaging, str(file_path), enhanced_host
-                        )
-                        file_info["enhanced_path"] = f"/mnt/user-data/outputs/{enhanced_name}"
-
-                        # [ADR-021] 步骤2: 置信度 ≥ 0.75 时自动调用 MCP 影像分析
-                        if confidence >= 0.75:
-                            try:
-                                mcp_result = await _call_mcp_analyze(
-                                    str(file_path), thread_id, safe_filename
-                                )
-                                if mcp_result:
-                                    file_info["mcp_analysis_status"] = "completed"
-                                    # 将发现数量写入供 Agent 快速判断
-                                    findings = mcp_result.get("findings", mcp_result.get("summary", {}).get("findings", []))
-                                    file_info["mcp_findings_count"] = str(
-                                        len(findings) if isinstance(findings, list) 
-                                        else mcp_result.get("summary", {}).get("total_findings", 0)
-                                    )
-                                else:
-                                    file_info["mcp_analysis_status"] = "no_result"
-                            except Exception as mcp_err:
-                                logger.warning(f"[ADR-021] MCP 自动分析失败 ({safe_filename}): {mcp_err}")
-                                file_info["mcp_analysis_status"] = "failed"
-                        else:
-                            # 置信度不足，不自动调用 MCP，让 Agent 自行判断
-                            file_info["mcp_analysis_status"] = "skipped_low_confidence"
-                            logger.info(
-                                f"[ADR-021] 跳过 MCP 自动分析: {safe_filename} "
-                                f"(confidence={confidence:.3f} < 0.75)"
-                            )
-
-                except Exception as vision_err:
-                    logger.error(f"视觉管道处理失败 ({safe_filename}): {vision_err}")
-                    # 视觉管道失败不影响上传本身
-
         except Exception as e:
             logger.error(f"Failed to upload {file.filename}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}: {str(e)}")
+
+    # ── P2: 并行视觉管道（受 vision.enabled 开关控制） ──
+    vision_cfg = getattr(get_app_config(), "vision", None) or {}
+    vision_enabled = vision_cfg.get("enabled", False)
+    
+    analysis_results = []
+    
+    if vision_enabled:
+        # Collect images for parallel analysis
+        pending_analysis = [
+            {"filename": f["filename"], "host_path": str(uploads_dir / f["filename"])}
+            for f in uploaded_files
+            if Path(f["filename"]).suffix.lower() in IMAGE_EXTS
+        ]
+        
+        if pending_analysis:
+            logger.info(f"Starting parallel analysis for {len(pending_analysis)} images")
+            analysis_results = await analyze_batch(pending_analysis, thread_id)
+            
+            # Enrich uploaded_files metadata from analysis results
+            result_map = {r.filename: r for r in analysis_results if not r.error}
+            for f in uploaded_files:
+                res = result_map.get(f["filename"])
+                if res:
+                    f["image_type"] = res.category
+                    f["image_confidence"] = str(res.confidence)
+                    if res.enhanced_file_path:
+                        f["enhanced_path"] = res.enhanced_file_path
+                    # For legacy compatibility in response structure
+                    if res.structured_data and res.structured_data.get("mcp_status") == "completed":
+                         f["mcp_analysis_status"] = "completed"
+                         f["mcp_findings_count"] = str(res.structured_data.get("findings_count", 0))
+
+    # [Gap①] 自动将上传结果回写到 Case 的 evidence 数组
+    try:
+        await _auto_sync_evidence(thread_id, uploaded_files, analysis_results)
+    except Exception as sync_err:
+        logger.warning(f"[Gap①] Evidence auto-sync failed (non-blocking): {sync_err}")
 
     return UploadResponse(
         success=True,
         files=uploaded_files,
         message=f"Successfully uploaded {len(uploaded_files)} file(s)",
     )
+
+
+async def _auto_sync_evidence(thread_id: str, uploaded_files: list[dict], analysis_results: list[AnalysisResult]) -> None:
+    """[Gap①] 上传完成后，自动将分析结果回写到 Case 的 evidence 数组。"""
+    from app.gateway.services.case_db import get_case_by_thread, add_evidence
+    from app.gateway.models.case import AddEvidenceRequest
+
+    case = get_case_by_thread(thread_id)
+    if not case:
+        logger.debug(f"[Gap①] No case for thread {thread_id}, skipping evidence sync")
+        return
+
+    result_map = {r.filename: r for r in analysis_results if not r.error}
+
+    for f in uploaded_files:
+        filename = f.get("filename", "")
+        file_ext = Path(filename).suffix.lower()
+        artifact_url = f.get("artifact_url", f.get("path", ""))
+
+        analysis = result_map.get(filename)
+        
+        # Merge properties from AnalysisResult if available
+        if analysis:
+            ev_type = analysis.evidence_type
+            evidence_title = analysis.evidence_title
+            ai_analysis_text = analysis.ai_analysis_text
+            structured = analysis.structured_data
+            is_abnormal = analysis.is_abnormal
+        else:
+            ai_analysis_text = None
+            structured = None
+            is_abnormal = False
+            # Check for existing sidecar manually if analysis skipped
+            uploads_dir = Path(f.get("path", "")).parent if f.get("path") else None
+            if uploads_dir:
+                 ocr_sidecar = uploads_dir / f"{filename}.ocr.md"
+                 if ocr_sidecar.exists():
+                     ai_analysis_text = ocr_sidecar.read_text(encoding="utf-8")
+
+            if file_ext in IMAGE_EXTS:
+                ev_type = "imaging"
+                evidence_title = "胸部X光片"
+            elif file_ext in _DOC_EXTS:
+                ev_type = "note"
+                evidence_title = filename
+            else:
+                ev_type = "note"
+                evidence_title = filename
+                
+            if ai_analysis_text:
+                from app.gateway.services.paddle_ocr import _extract_title_from_markdown
+                extracted_title = _extract_title_from_markdown(ai_analysis_text)
+                if extracted_title:
+                    evidence_title = extracted_title
+
+        # Upsert 逻辑：如果已存在相同 file_path 的证据项则更新，否则新增
+        # 这样重复上传同一文件时，不会产生重复记录，且旧数据会被刷新
+        existing_ev = None
+        for ev in case.evidence:
+            if ev.file_path and artifact_url and ev.file_path == artifact_url:
+                existing_ev = ev
+                break
+
+        if existing_ev:
+            from app.gateway.services.case_db import update_evidence_data
+            update_evidence_data(case.case_id, existing_ev.evidence_id, {
+                "title": evidence_title,
+                "ai_analysis": ai_analysis_text,
+                "structured_data": structured,
+                "is_abnormal": bool(is_abnormal),
+            })
+            logger.info(f"[Gap①] Updated existing evidence: {filename} → {ev_type} for case {case.case_id}")
+        else:
+            req = AddEvidenceRequest(
+                type=ev_type,
+                title=evidence_title,
+                source="patient_upload",
+                file_path=artifact_url,
+                ai_analysis=ai_analysis_text,
+                structured_data=structured,
+                is_abnormal=bool(is_abnormal),
+            )
+            add_evidence(case.case_id, req)
+            logger.info(f"[Gap①] Auto-synced evidence: {filename} → {ev_type} for case {case.case_id}")
 
 
 @router.get("/list", response_model=dict)
