@@ -232,7 +232,7 @@ export default function DoctorHistoryPage() {
                           </div>
                         </div>
 
-                        {/* Diagnosis */}
+                      {/* Diagnosis */}
                         {c.diagnosis && (
                           <div>
                             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">诊断结论</h4>
@@ -254,6 +254,41 @@ export default function DoctorHistoryPage() {
                               </div>
                             </div>
                           </div>
+                        )}
+                      </div>
+
+                      {/* 操作按钮区 */}
+                      <div className="flex items-center justify-end gap-3 mt-4 pt-4 border-t border-slate-100">
+                        <Link href={`/doctor/chat/${c.case_id}`}>
+                          <Button variant="outline" size="sm" className="rounded-lg text-xs">
+                            <ArrowRight className="h-3.5 w-3.5 mr-1.5" /> 查看详情
+                          </Button>
+                        </Link>
+                        {c.status === "diagnosed" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="rounded-lg text-xs bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const res = await fetch(`${getBackendBaseURL()}/api/cases/${c.case_id}/status`, {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ status: "closed" }),
+                                });
+                                if (res.ok) {
+                                  setCases(prev => prev.map(item =>
+                                    item.case_id === c.case_id ? { ...item, status: "closed" } : item
+                                  ));
+                                }
+                              } catch (err) {
+                                console.error("Archive failed:", err);
+                              }
+                            }}
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" /> 归档
+                          </Button>
                         )}
                       </div>
                     </div>

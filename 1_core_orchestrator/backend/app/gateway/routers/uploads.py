@@ -10,10 +10,10 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from deerflow.config.app_config import get_app_config
-from deerflow.config.paths import get_paths
-from deerflow.sandbox.sandbox_provider import get_sandbox_provider
-from deerflow.uploads.manager import (
+from app.core.config.app_config import get_app_config
+from app.core.config.paths import get_paths
+from app.core.sandbox.sandbox_provider import get_sandbox_provider
+from app.core.uploads.manager import (
     PathTraversalError,
     delete_file_safe,
     enrich_file_listing,
@@ -24,7 +24,7 @@ from deerflow.uploads.manager import (
     upload_artifact_url,
     upload_virtual_path,
 )
-from deerflow.utils.file_conversion import CONVERTIBLE_EXTENSIONS, convert_file_to_markdown
+from app.core.utils.file_conversion import CONVERTIBLE_EXTENSIONS, convert_file_to_markdown
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.parallel_analyzer import analyze_batch
 

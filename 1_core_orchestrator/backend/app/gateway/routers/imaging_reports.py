@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from deerflow.config.paths import get_paths
+from app.core.config.paths import get_paths
 from app.gateway.services.case_db import (
     sync_report_from_file,
     get_reports_by_thread,
@@ -233,32 +233,19 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
                 logger.warning(f"Failed to check existing report {report_file}: {e}")
 
     # 2. Call MCP Vision Service
-    from mcp.client.sse import sse_client
-    from mcp.client.session import ClientSession
+    from app.gateway.services.mcp_vision_client import analyze_xray
     
     enable_sam = payload.enable_sam if payload else False
-    logger.info(f"[HITL] Calling MCP Vision via SSE for {local_image_path}")
+    logger.info(f"[HITL] Calling MCP Vision Service for {local_image_path}")
     
     try:
-        async with sse_client("http://127.0.0.1:8002/sse") as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                mcp_result = await session.call_tool("analyze_xray", {
-                    "image_path": local_image_path,
-                    "enable_sam": enable_sam
-                })
-                
-                ai_data_str = mcp_result.content[0].text
-                ai_result_raw = json.loads(ai_data_str)
-                
-                if "error" in ai_result_raw:
-                    raise HTTPException(status_code=500, detail=ai_result_raw["error"])
-                
-                # Format to our system's expected ai_result structure
-                formatted_ai_result = {
-                    "findings": ai_result_raw.get("findings", []),
-                    "densenet_probs": ai_result_raw.get("summary", {}).get("disease_probabilities", {})
-                }
+        ai_result_raw = await analyze_xray(local_image_path, enable_sam=enable_sam)
+        
+        # Format to our system's expected ai_result structure
+        formatted_ai_result = {
+            "findings": ai_result_raw.get("findings", []),
+            "densenet_probs": ai_result_raw.get("summary", {}).get("disease_probabilities", {})
+        }
     except Exception as e:
         logger.error(f"[HITL] MCP Call Failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Vision model analysis failed: {str(e)}")
@@ -338,7 +325,7 @@ async def generate_text_draft(thread_id: str, request: GenerateDraftRequest):
     if not api_key:
         # 尝试从 config.yaml 读取
         try:
-            from deerflow.config.app_config import get_app_config
+            from app.core.config.app_config import get_app_config
             cfg = get_app_config()
             for m in getattr(cfg, "models", []):
                 if hasattr(m, "api_key") and m.api_key:

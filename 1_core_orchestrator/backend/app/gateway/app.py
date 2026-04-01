@@ -19,7 +19,7 @@ from app.gateway.routers import (
     uploads,
     knowledge_proxy,
 )
-from deerflow.config.app_config import get_app_config
+from app.core.config.app_config import get_app_config
 
 # Configure logging
 logging.basicConfig(
@@ -54,6 +54,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             warmup()
             register_all()
             logger.info("Analyzer registry initialized")
+            
+            from app.gateway.services.mcp_vision_client import check_health
+            if not await check_health():
+                logger.warning("⚠️ MCP Vision service (port 8002) is not reachable. X-ray analysis will fail until the service is started.")
+            else:
+                logger.info("MCP Vision service is online and healthy.")
         except Exception:
             logger.exception("Chinese-CLIP 模型或分析器注册失败，视觉管道将不可用")
 

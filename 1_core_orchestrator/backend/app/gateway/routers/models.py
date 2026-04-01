@@ -4,8 +4,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from ruamel.yaml import YAML
 
-from deerflow.config import get_app_config
-from deerflow.config.app_config import AppConfig
+from app.core.config import get_app_config
+from app.core.config.app_config import AppConfig
 
 router = APIRouter(prefix="/api", tags=["models"])
 

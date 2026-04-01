@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { ShieldCheck, User, Image as ImageIcon, FileText, Activity, Loader2, CheckCircle2, Circle, Plus, Sparkles, Trash2, Pencil, Eye, Columns2, AlignJustify } from "lucide-react";
+import { ShieldCheck, User, Image as ImageIcon, FileText, Activity, Loader2, CheckCircle2, Circle, Plus, Sparkles, Trash2, Pencil, Eye, Columns2, AlignJustify, ChevronDown, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,6 +12,7 @@ import { ImagingViewer } from "@/components/doctor/ImagingViewer";
 import { Streamdown } from "streamdown";
 import { streamdownPlugins } from "@/core/streamdown";
 import { LabMarkdownViewer } from "@/components/doctor/LabMarkdownViewer";
+import { toast } from "sonner";
 
 interface EvidenceDeskProps {
   activeTab: string;
@@ -22,6 +24,7 @@ interface EvidenceDeskProps {
 }
 
 export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewPass, caseId, onSynthesisDiagnosis }: EvidenceDeskProps) {
+  const router = useRouter();
   
   // ── API Data State ──────────────────────────────────
   const [caseData, setCaseData] = useState<CaseData | null>(null);
@@ -92,6 +95,18 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+
+  // ── P0: 诊断表单状态 ──────────────────────────────────
+  const [showDiagnosisForm, setShowDiagnosisForm] = useState(false);
+  const [diagnosisForm, setDiagnosisForm] = useState({
+    primary_diagnosis: "",
+    secondary_diagnoses: "",
+    treatment_plan: "",
+    prescription: "",
+    follow_up: "",
+    doctor_notes: "",
+  });
+  const [diagnosisSubmitted, setDiagnosisSubmitted] = useState(false);
 
   // [Gap④] 综合诊断：拉取聚合摘要 → 注入 AI Chat
   const handleSynthesisDiagnosis = async () => {
@@ -222,23 +237,43 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
     }, 500);
   };
 
-  const handleReviewPassClick = async () => {
+  // P0: 展开诊断表单（替代直接改 status）
+  const handleReviewPassClick = () => {
     if (!caseId) {
       onReviewPass();
       return;
     }
+    setShowDiagnosisForm(true);
+  };
+
+  // P0: 提交诊断结论 → PUT /api/cases/{id}/diagnosis → 自动设 status=diagnosed
+  const handleSubmitDiagnosis = async () => {
+    if (!caseId || !diagnosisForm.primary_diagnosis.trim()) return;
     setIsSubmitting(true);
     try {
       const { getBackendBaseURL } = await import("@/core/config");
-      await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/status`, {
-        method: "PATCH",
+      const res = await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/diagnosis`, {
+        method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "diagnosed" })
+        body: JSON.stringify({
+          primary_diagnosis: diagnosisForm.primary_diagnosis.trim(),
+          secondary_diagnoses: diagnosisForm.secondary_diagnoses
+            ? diagnosisForm.secondary_diagnoses.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+            : [],
+          treatment_plan: diagnosisForm.treatment_plan.trim(),
+          prescription: diagnosisForm.prescription.trim() || null,
+          follow_up: diagnosisForm.follow_up.trim() || null,
+          doctor_notes: diagnosisForm.doctor_notes.trim(),
+        }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setDiagnosisSubmitted(true);
       onReviewPass();
+      // 1.5 秒后自动返回队列
+      setTimeout(() => router.push("/doctor/queue"), 1500);
     } catch (e) {
-      console.error("Failed to approve case", e);
-      onReviewPass();
+      console.error("Failed to submit diagnosis", e);
+      toast.error("诊断提交失败，请重试");
     } finally {
       setIsSubmitting(false);
     }
@@ -605,7 +640,114 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
         )}
         </div>
 
-        {/* 底部审核安全门 (Review Gate) */}
+        {/* ── P0: 内联诊断表单 (可折叠) ──────────────────── */}
+        {showDiagnosisForm && !diagnosisSubmitted && (
+          <div className="shrink-0 border-t-2 border-green-300 bg-gradient-to-b from-green-50/80 to-white px-8 py-6 z-10 animate-in slide-in-from-bottom-4 duration-300 shadow-[0_-8px_30px_rgba(0,0,0,0.06)]">
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-green-100 rounded-lg text-green-700">
+                  <ClipboardCheck className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-800">提交诊断结论</h3>
+                  <p className="text-xs text-slate-500">填写诊断后将正式完结本病例并通知患者</p>
+                </div>
+              </div>
+              <button onClick={() => setShowDiagnosisForm(false)} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors">
+                <ChevronDown className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              {/* 主诊断 (必填) */}
+              <div className="md:col-span-2">
+                <label className="text-xs font-bold text-slate-600 mb-1.5 block">主诊断 <span className="text-red-500">*</span></label>
+                <Input
+                  placeholder="例：右下肺社区获得性肺炎"
+                  className="bg-white border-slate-200 focus:border-green-400 focus:ring-green-200"
+                  value={diagnosisForm.primary_diagnosis}
+                  onChange={(e) => setDiagnosisForm(prev => ({ ...prev, primary_diagnosis: e.target.value }))}
+                />
+              </div>
+              {/* 次要诊断 */}
+              <div className="md:col-span-2">
+                <label className="text-xs font-bold text-slate-600 mb-1.5 block">次要诊断 <span className="text-slate-400 font-normal">(用逗号分隔)</span></label>
+                <Input
+                  placeholder="例：高血压2级，2型糖尿病"
+                  className="bg-white border-slate-200"
+                  value={diagnosisForm.secondary_diagnoses}
+                  onChange={(e) => setDiagnosisForm(prev => ({ ...prev, secondary_diagnoses: e.target.value }))}
+                />
+              </div>
+              {/* 治疗方案 */}
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1.5 block">治疗方案</label>
+                <Textarea
+                  placeholder="抗感染治疗 + 对症处理..."
+                  className="bg-white border-slate-200 min-h-[70px] resize-none"
+                  value={diagnosisForm.treatment_plan}
+                  onChange={(e) => setDiagnosisForm(prev => ({ ...prev, treatment_plan: e.target.value }))}
+                />
+              </div>
+              {/* 处方 */}
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1.5 block">处方</label>
+                <Textarea
+                  placeholder="左氧氟沙星 0.5g qd..."
+                  className="bg-white border-slate-200 min-h-[70px] resize-none"
+                  value={diagnosisForm.prescription}
+                  onChange={(e) => setDiagnosisForm(prev => ({ ...prev, prescription: e.target.value }))}
+                />
+              </div>
+              {/* 随访建议 */}
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1.5 block">随访建议</label>
+                <Input
+                  placeholder="1 周后复诊，复查血常规..."
+                  className="bg-white border-slate-200"
+                  value={diagnosisForm.follow_up}
+                  onChange={(e) => setDiagnosisForm(prev => ({ ...prev, follow_up: e.target.value }))}
+                />
+              </div>
+              {/* 医生备注 */}
+              <div>
+                <label className="text-xs font-bold text-slate-600 mb-1.5 block">医生备注</label>
+                <Input
+                  placeholder="补充说明..."
+                  className="bg-white border-slate-200"
+                  value={diagnosisForm.doctor_notes}
+                  onChange={(e) => setDiagnosisForm(prev => ({ ...prev, doctor_notes: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-green-100">
+              <Button variant="outline" onClick={() => setShowDiagnosisForm(false)} className="rounded-full px-6">
+                取消
+              </Button>
+              <Button
+                size="lg"
+                onClick={handleSubmitDiagnosis}
+                disabled={isSubmitting || !diagnosisForm.primary_diagnosis.trim()}
+                className="px-8 py-6 text-base rounded-full font-semibold bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 gap-2 disabled:opacity-50"
+              >
+                {isSubmitting ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
+                {isSubmitting ? "提交中..." : "确认提交诊断"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* 诊断提交成功反馈 */}
+        {diagnosisSubmitted && (
+          <div className="h-20 shrink-0 border-t-2 border-green-400 bg-green-50 px-8 flex items-center justify-center gap-3 z-10 animate-in fade-in duration-300">
+            <CheckCircle2 className="h-6 w-6 text-green-600" />
+            <span className="text-lg font-bold text-green-800">诊断已完成 — 正在返回队列...</span>
+          </div>
+        )}
+
+        {/* 底部审核安全门 (Review Gate) — 诊断表单未展开时显示 */}
+        {!showDiagnosisForm && !diagnosisSubmitted && (
         <div className="h-20 shrink-0 border-t border-slate-200 bg-white/95 backdrop-blur px-8 flex items-center justify-between shadow-[0_-8px_30px_rgba(0,0,0,0.04)] z-10 sticky bottom-0">
            <div className="text-sm text-slate-500 flex flex-col">
               <span className="font-medium text-slate-800">人工审核进度</span>
@@ -617,7 +759,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                  <div key={t.id} className={cn("w-2 h-2 rounded-full transition-colors", reviewedTabs.has(t.id) ? "bg-emerald-500" : "bg-slate-200")} />
                ))}
              </div>
-             {/* [Gap④] 综合诊断按钮 */}
+             {/* 综合诊断按钮 */}
              {onSynthesisDiagnosis && (
                <Button
                  size="lg"
@@ -634,19 +776,20 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                 onClick={handleReviewPassClick}
                 className={cn(
                   "px-8 py-6 text-lg tracking-wide rounded-full font-semibold transition-all shadow-md",
-                  (isReviewPassed || isSubmitting)
+                  isReviewPassed
                     ? "bg-slate-200 text-slate-400 cursor-not-allowed hover:bg-slate-200" 
                     : allReviewed
                       ? "bg-green-600 text-white hover:bg-green-700 hover:shadow-lg hover:-translate-y-0.5"
                       : "bg-slate-300 text-slate-500 cursor-not-allowed hover:bg-slate-300"
                 )}
-                disabled={isReviewPassed || !allReviewed || isSubmitting}
+                disabled={isReviewPassed || !allReviewed}
               >
                <ShieldCheck className="mr-2 h-5 w-5" />
-               {isSubmitting ? "正在归档..." : isReviewPassed ? "证据链已锁定 (Locked)" : allReviewed ? "确认人工审核完成" : `还有 ${ALL_TABS.length - reviewedTabs.size} 项未审核`}
+               {isReviewPassed ? "证据链已锁定 (Locked)" : allReviewed ? "提交诊断结论" : `还有 ${ALL_TABS.length - reviewedTabs.size} 项未审核`}
               </Button>
            </div>
         </div>
+        )}
       </div>
     </div>
   );

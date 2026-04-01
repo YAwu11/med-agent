@@ -3,33 +3,28 @@
 import asyncio
 import json
 import logging
-import sys
 import uuid
 from pathlib import Path
 
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.vision_gateway import enhance_medical_imaging
-from deerflow.config.paths import get_paths
+from app.core.config.paths import get_paths
 
 logger = logging.getLogger(__name__)
 
 async def _call_mcp_analyze(image_path: str, thread_id: str, original_filename: str) -> dict | None:
-    """Directly invokes the MCP Vision Engine synchronously using asyncio.run_in_executor."""
-    mcp_dir = Path(__file__).resolve().parents[5] / "3_mcp_medical_vision" / "mcp_chest_xray"
-    if str(mcp_dir) not in sys.path:
-        sys.path.insert(0, str(mcp_dir))
+    from app.gateway.services.mcp_vision_client import analyze_xray
 
-    import engine as vision_engine  # noqa: E402
+    logger.info(f"[ADR-026] Auto MCP Analysis started: {original_filename}")
 
-    logger.info(f"[ADR-025] Auto MCP Analysis started: {original_filename}")
-
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, lambda: vision_engine.analyze(image_path, enable_sam=False)
-    )
+    try:
+        result = await analyze_xray(image_path, enable_sam=False)
+    except Exception as e:
+        logger.error(f"[ADR-026] MCP Vision service call failed for {original_filename}: {e}")
+        return None
 
     if not result:
-        logger.warning(f"[ADR-025] MCP Engine returned empty result: {original_filename}")
+        logger.warning(f"[ADR-026] MCP Engine returned empty result: {original_filename}")
         return None
 
     # Write analysis result to sandbox for manual review cache
@@ -54,7 +49,7 @@ async def _call_mcp_analyze(image_path: str, thread_id: str, original_filename: 
 
     total_findings = result.get("summary", {}).get("total_findings", 0)
     logger.info(
-        f"[ADR-025] MCP Analysis complete: {original_filename} → report_id={report_id}, "
+        f"[ADR-026] MCP Analysis complete: {original_filename} → report_id={report_id}, "
         f"findings={total_findings}"
     )
     return result

@@ -107,6 +107,25 @@ async def update_case_status(case_id: str, req: UpdateStatusRequest):
     return case.model_dump()
 
 
+# ── Diagnosis Submission ──────────────────────────────────
+
+@router.put("/cases/{case_id}/diagnosis")
+async def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest):
+    """Submit a doctor's diagnosis for a case.
+
+    Sets the case status to 'diagnosed', stores the diagnosis fields,
+    and broadcasts a 'diagnosed' SSE event so patient-side pages refresh.
+    """
+    case = case_db.submit_diagnosis(case_id, req)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+    _broadcast_event("diagnosed", {
+        "case_id": case_id,
+        "primary_diagnosis": req.primary_diagnosis,
+    })
+    return case.model_dump()
+
+
 # ── Patient Info Editing ───────────────────────────────────
 
 @router.patch("/cases/{case_id}/patient-info")
@@ -279,6 +298,21 @@ async def get_case_summary(case_id: str):
         "evidence_count": len(case.evidence),
         "has_diagnosis": case.diagnosis is not None,
     }
+
+
+# ── Patient-Side Case Lookup ───────────────────────────────
+
+@router.get("/cases/by-thread/{thread_id}")
+async def get_case_by_thread(thread_id: str):
+    """Look up a case by the patient's LangGraph thread_id.
+
+    Used by the patient status page to retrieve their case and diagnosis
+    without needing to know the internal case_id.
+    """
+    case = case_db.get_case_by_thread(thread_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"No case found for thread {thread_id}")
+    return case.model_dump()
 
 
 # ── SSE Real-Time Stream ──────────────────────────────────

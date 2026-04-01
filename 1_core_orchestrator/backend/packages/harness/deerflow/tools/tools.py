@@ -10,13 +10,22 @@ from deerflow.tools.builtins import ask_clarification_tool, present_file_tool
 # [Phase7] submit_for_review_tool 和 task_tool 已移除
 from deerflow.tools.builtins.tool_search import reset_deferred_registry
 
+# [Strangler Fig Migration] 临时反向依赖 app.core 获取最新核心工具
+from app.core.tools.builtins.rag_retrieve import rag_retrieve_tool
+from app.core.tools.builtins.update_patient_info import update_patient_info_tool
+from app.core.tools.builtins.preview_appointment import preview_appointment_tool
+from app.core.tools.builtins.schedule_appointment import schedule_appointment_tool
+
 logger = logging.getLogger(__name__)
 
 BUILTIN_TOOLS = [
     present_file_tool,
     ask_clarification_tool,
-    # [Phase7] submit_for_review_tool 已移除：不再阻塞等医生审核
-    # [Phase7] task_tool 已移除：患者端主Agent直接调工具
+    # [Strangler Fig Migration] 挂载 app.core 侧最新的业务工具
+    update_patient_info_tool,       # 患者信息提取
+    preview_appointment_tool,       # 挂号预览
+    schedule_appointment_tool,      # 挂号签发
+    rag_retrieve_tool,              # 知识库检索 (RAGFlow Lite)
 ]
 
 

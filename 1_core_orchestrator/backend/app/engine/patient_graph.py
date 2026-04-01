@@ -1,6 +1,13 @@
 """
-Native LangGraph orchestration for the Patient Intake Agent.
-This replaces the heavy deerflow subagent wrappers under the Strangler Fig pattern.
+[WIP] Native LangGraph orchestration for the Patient Intake Agent.
+
+⚠️ STATUS: This file is NOT wired into production.
+The active agent entry point is: deerflow.agents:make_lead_agent (see langgraph.json)
+This file serves as the TARGET ARCHITECTURE for future migration away from deerflow middleware.
+
+When ready to activate:
+1. Reimplement critical middlewares (Summarization, Vision, LoopDetection) as graph nodes
+2. Update langgraph.json: graphs.lead_agent → app.engine.patient_graph:graph
 """
 import logging
 from typing import Annotated, NotRequired
@@ -101,24 +108,34 @@ SYSTEM_PROMPT_TEMPLATE = """
 <image_handling_protocol>
 **图片处理规则（核心规则，必须严格遵守）：**
 
-当用户上传了图片文件时，系统会在上传阶段自动完成分拣和分析。
-你在 `<uploaded_files>` 区域可以看到每个文件的处理状态。
+当用户上传图片时，系统会通过 CLIP 模型自动分类并调用对应工具完成分析。
+正常情况下你**不需要**手动调用 `analyze_xray` 工具。
 
-1. **医疗影像（medical_imaging）**
-   - 查看 `mcp_analysis_status` 字段：
-     · `completed` → 系统已自动完成 AI 分析。在 `<uploaded_files>` 中可能包含发现数 `mcp_findings_count`。
-       请查找对应的分析报告，综合为患者提供初步解读（不下诊断结论）。
-     · `skipped_low_confidence` → 系统对图片类型不够确定，未自动分析。
-       请根据患者描述和你的视觉能力自行判断图片内容。
-     · `failed` → 自动分析出错。请告知患者系统暂时无法处理，建议线下就诊。
-   - 你**不需要也不能**调用任何影像分析工具，所有分析都由系统在上传时自动完成。
+你在 `<uploaded_files>` 区域可以看到每个文件的处理状态：
 
-2. **化验单/检查报告（lab_report）** → **你直接处理**
-   - 系统已经为你提取了图片的 `ocr_text`，请直接在 `<uploaded_files>` 区域读取排版好的 Markdown 表格文本。
-   - 不要试图再去调用视觉工具，直接针对提供的指标数值和参考区间进行严谨的医学评估。
+1. **医疗影像（medical_imaging）+ mcp_status=completed**
+   → 系统已自动完成 AI 分析。直接阅读结果为患者解读即可。
+   → ❌ 不要重复调用 `analyze_xray`
+   
+2. **医疗影像 + mcp_status=failed**
+   → 自动分析出错。告知患者系统暂时无法处理，建议线下就诊。
+   → ❌ 不要尝试重新调用工具
 
-3. **未识别图片（other）** → **你自己看、自己判断**
-   - 依靠视觉模型自行判断。
+3. **化验单/检查报告（lab_report）**
+   → 系统已提取 OCR 文本。直接读取 Markdown 表格进行医学评估。
+   → ❌ 不要调用 `analyze_xray`（化验单不是影像）
+
+4. **未识别图片（other / clinical_photo）— 需要你判断**
+   → 系统已提供 VLM 兜底描述（`vlm_description` 字段）。
+   → 首先阅读 VLM 描述。如果描述表明这**实际上是一张胸部X光片或CT等医学影像**
+     （说明 CLIP 分类出错了），**此时且仅此时**你应该主动调用 `analyze_xray` 工具，
+     传入该图片的 `file_path` 进行专业分析。
+   → 如果 VLM 描述表明这不是医学影像（如日常照片、药盒照片等），
+     则依靠 VLM 描述和你自己的判断为患者解答，不调用工具。
+
+**调用 `analyze_xray` 的唯一合法场景：**
+分类标签为 `other`/`clinical_photo` 的图片，经你判断实际是医学影像时。
+其他任何场景均**禁止**调用该工具。
 </image_handling_protocol>
 
 {skills_section}
@@ -146,9 +163,8 @@ def call_model(state: PatientState, config: RunnableConfig):
     model_name = cfg.get("model_name") or cfg.get("model")
     thinking_enabled = cfg.get("thinking_enabled", False)
     
-    # [ADR-021] Agent 不持有 MCP 工具。影像分析由上传管线自动完成。
-    # Agent 只使用内置工具（信息采集、知识库检索、挂号等）。
-    tools = get_available_tools(model_name=model_name, subagent_enabled=False, include_mcp=False)
+    # Agent 可以调用 MCP 工具（如 analyze_xray）。影像分析默认由上传管线自动完成，但在兜底时可以主动调用。
+    tools = get_available_tools(model_name=model_name, subagent_enabled=False, include_mcp=True)
     
     model = create_chat_model(name=model_name, thinking_enabled=thinking_enabled)
     model_with_tools = model.bind_tools(tools)
@@ -157,7 +173,7 @@ def call_model(state: PatientState, config: RunnableConfig):
     sys_prompt_text = SYSTEM_PROMPT_TEMPLATE.format(
         skills_section="",
         deferred_tools_section="",
-        subagent_section="""<subagent_system>\n你不需要调用任何影像分析工具。当用户上传了医疗影像，系统会在上传时自动完成AI分析并将结果存入系统。你只需要阅读分析结果并为患者提供初步解读。\n</subagent_system>"""
+        subagent_section=""
     )
     
     messages = [SystemMessage(content=sys_prompt_text)] + state["messages"]
@@ -178,7 +194,7 @@ def should_continue(state: PatientState):
 
 # Build the generic tools executor
 # ToolNode natively handles tool execution via langgraph prebuilt.
-_tools_lazy = get_available_tools(model_name=None, subagent_enabled=False, include_mcp=False)
+_tools_lazy = get_available_tools(model_name=None, subagent_enabled=False, include_mcp=True)
 if not _tools_lazy:
     # Fail-safe empty ToolNode prevention
     logger.warning("No tools found, creating dummy tool node configuration.")

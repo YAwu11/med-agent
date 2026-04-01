@@ -207,6 +207,37 @@ def update_case_status(case_id: str, new_status: CaseStatus, doctor_thread_id: s
     return case
 
 
+def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest) -> Case | None:
+    """Submit a doctor's diagnosis and transition the case to 'diagnosed'.
+
+    Creates a DoctorDiagnosis record, attaches it to the Case, and sets
+    case.status = diagnosed. This is the formal conclusion of the diagnostic loop.
+    """
+    case = get_case(case_id)
+    if case is None:
+        return None
+
+    case.diagnosis = DoctorDiagnosis(
+        primary_diagnosis=req.primary_diagnosis,
+        secondary_diagnoses=req.secondary_diagnoses,
+        treatment_plan=req.treatment_plan,
+        prescription=req.prescription,
+        follow_up=req.follow_up,
+        doctor_notes=req.doctor_notes,
+    )
+    case.status = CaseStatus.DIAGNOSED
+    case.updated_at = datetime.now(timezone.utc)
+
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE cases SET status = ?, data = ?, updated_at = ? WHERE case_id = ?",
+            (CaseStatus.DIAGNOSED.value, case.model_dump_json(), case.updated_at.isoformat(), case_id),
+        )
+        conn.commit()
+    return case
+
+
 def add_evidence(case_id: str, req: AddEvidenceRequest) -> Case | None:
     """Append an evidence item to a case."""
     case = get_case(case_id)

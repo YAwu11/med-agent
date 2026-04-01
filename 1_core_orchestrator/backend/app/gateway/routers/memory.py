@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from deerflow.agents.memory.updater import get_memory_data, reload_memory_data
-from deerflow.config.memory_config import get_memory_config
+from app.core.config.memory_config import get_memory_config
 
 router = APIRouter(prefix="/api", tags=["memory"])
 

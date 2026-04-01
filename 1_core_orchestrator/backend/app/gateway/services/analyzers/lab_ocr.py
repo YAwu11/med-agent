@@ -7,7 +7,7 @@ from pathlib import Path
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.vision_gateway import enhance_lab_report
 from app.gateway.services.paddle_ocr import fetch_medical_report_ocr, _extract_title_from_markdown
-from deerflow.config.paths import get_paths
+from app.core.config.paths import get_paths
 
 logger = logging.getLogger(__name__)
 

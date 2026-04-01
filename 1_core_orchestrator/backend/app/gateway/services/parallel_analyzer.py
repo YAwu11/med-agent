@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from typing import Callable, Sequence
+from typing import Callable, Sequence, Awaitable
 
 from .analyzer_registry import AnalysisResult, get_analyzers_for
 

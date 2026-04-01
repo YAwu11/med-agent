@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useCallback } from "react";
+import Link from "next/link";
 import {
   CheckCircle2,
   AlertCircle,
@@ -147,7 +148,15 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
             <span className="font-medium">已提交资料:</span> {confirmed.evidence_count} 份
           </p>
         </div>
-        <p className="mt-3 text-xs text-green-600">医生将尽快审阅您的资料，请留意通知。</p>
+        <div className="mt-4 flex items-center justify-between">
+          <p className="text-xs text-green-600">医生将尽快审阅您的资料，请留意通知。</p>
+          <Link
+            href={`/workspace/status?thread_id=${data.thread_id}`}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-green-700 bg-green-100 hover:bg-green-200 px-3 py-1.5 rounded-full transition-colors"
+          >
+            查看进度 →
+          </Link>
+        </div>
       </div>
     );
   }
