@@ -243,17 +243,41 @@ function SelectablePolygon({
 
   const isDoctor = finding.reviewed_by_doctor;
   const doctorTag = isDoctor ? " 👨\u200d⚕️" : "";
-  const labelText = `#${finding.id.substring(0, 4)}: ${(finding.confidence * 100).toFixed(0)}% ${finding.disease}${doctorTag}`;
+  // [ADR-034] 置信度熔断状态标记（与 SelectableRect 保持一致）
+  const fuseTag = finding.review_status === "forced_review" ? " ⚠️待审"
+    : finding.review_status === "auto_passed" ? " ✅" : "";
+  const labelText = `#${finding.id.substring(0, 4)}: ${(finding.confidence * 100).toFixed(0)}% ${finding.disease}${doctorTag}${fuseTag}`;
   const fontSize = Math.max(12, 14) / scale;
 
-  const strokeColor = isSelected
-    ? BBOX_SELECTED_STROKE
-    : isDoctor
-      ? BBOX_DOCTOR_STROKE
-      : "rgba(255, 80, 80, 0.85)";  // 脑肿瘤蒙版用醒目的红色
-  const fillColor = isSelected
-    ? "rgba(56, 189, 248, 0.18)"
-    : "rgba(255, 80, 80, 0.15)";  // 半透明红色填充
+  // 颜色优先级：选中 > 熔断状态 > 医生审核 > 默认（脑肿瘤红色）
+  let strokeColor: string;
+  let fillColor: string;
+  let labelBg: string;
+  if (isSelected) {
+    strokeColor = BBOX_SELECTED_STROKE;
+    fillColor = "rgba(56, 189, 248, 0.18)";
+    labelBg = LABEL_SELECTED_BG;
+  } else if (finding.review_status === "forced_review") {
+    strokeColor = FUSE_FORCED_STROKE;
+    fillColor = FUSE_FORCED_FILL;
+    labelBg = FUSE_FORCED_LABEL;
+  } else if (finding.review_status === "suggested_review") {
+    strokeColor = FUSE_SUGGEST_STROKE;
+    fillColor = FUSE_SUGGEST_FILL;
+    labelBg = FUSE_SUGGEST_LABEL;
+  } else if (finding.review_status === "auto_passed") {
+    strokeColor = FUSE_PASSED_STROKE;
+    fillColor = FUSE_PASSED_FILL;
+    labelBg = FUSE_PASSED_LABEL;
+  } else if (isDoctor) {
+    strokeColor = BBOX_DOCTOR_STROKE;
+    fillColor = "rgba(255, 80, 80, 0.15)";
+    labelBg = LABEL_BG;
+  } else {
+    strokeColor = "rgba(255, 80, 80, 0.85)";
+    fillColor = "rgba(255, 80, 80, 0.15)";
+    labelBg = "rgba(255, 80, 80, 0.85)";
+  }
 
   return (
     <Group
@@ -278,7 +302,7 @@ function SelectablePolygon({
         y={minY - fontSize * 1.6}
         width={labelText.length * fontSize * 0.55 + 8 / scale}
         height={fontSize * 1.4}
-        fill={isSelected ? LABEL_SELECTED_BG : "rgba(255, 80, 80, 0.85)"}
+        fill={labelBg}
         cornerRadius={2 / scale}
         listening={false}
       />
