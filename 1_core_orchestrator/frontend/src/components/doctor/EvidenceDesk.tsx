@@ -633,6 +633,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                    isAbnormal={activeTabData.item?.is_abnormal}
                    evidenceId={activeTabData.item?.evidence_id}
                    caseId={caseId}
+                    ocrRawNumbers={activeTabData.item?.structured_data?.ocr_raw_numbers as string[] | undefined}
                  />
                );
              })()}

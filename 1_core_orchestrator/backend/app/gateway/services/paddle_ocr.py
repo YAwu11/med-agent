@@ -100,26 +100,59 @@ def _fix_arrow_placement(md: str) -> str:
     return "\n".join(fixed_lines)
 
 
+def _extract_lab_numbers(text: str) -> list[str]:
+    """从 OCR 原始文本中提取检验数值指纹，用于与 LLM 清洗后数值交叉对账。
+
+    策略：
+    - 提取所有浮点数和整数
+    - 过滤掉年份（2020-2030）、日期片段、纯序号（1-位数字独立出现）
+    - 保留检验结果级别的数字（如 5.55, 109, 17.5, 0.85）
+    """
+    # 先移除日期格式以避免误捕
+    cleaned = re.sub(r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日]?', '', text)
+    cleaned = re.sub(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', '', cleaned)
+    # 移除时间格式
+    cleaned = re.sub(r'\d{1,2}:\d{2}(:\d{2})?', '', cleaned)
+
+    # 提取所有数值（含小数）
+    all_nums = re.findall(r'(?<![-/])\b(\d+\.\d+|\d{2,})\b(?![-/年月日号])', cleaned)
+
+    # 过滤不像检验值的数字
+    result = []
+    for n in all_nums:
+        val = float(n)
+        # 排除年份范围的4位数字
+        if 2000 <= val <= 2099:
+            continue
+        # 排除过大的纯整数（通常是编号、电话等）
+        if '.' not in n and val >= 100000:
+            continue
+        result.append(n)
+
+    return result
+
+
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(min=2, max=6),
     reraise=True,
 )
-async def fetch_medical_report_ocr(image_path: str) -> str:
-    """调用 SiliconFlow 视觉语言模型识别图片，返回结构化 Markdown 字符串。
+async def fetch_medical_report_ocr(image_path: str) -> tuple[str, list[str]]:
+    """调用 SiliconFlow 视觉语言模型识别图片，返回结构化 Markdown + OCR 数值指纹。
 
-    v2 架构：输出类型从 list[dict] 改为 str (Markdown)。
-    全链路输出 Markdown，前端直接渲染，不再需要 JSON 中间格式。
+    v3 架构变更（ADR-035）：
+    - 返回值从 str 改为 tuple[str, list[str]]，第二项为 OCR 原始数值指纹。
+    - 用于前端与 LLM 清洗后数值做交叉对账，检测大模型数值幻觉。
 
     Returns:
-        结构化 Markdown 文档字符串。失败时返回空字符串。
+        (cleaned_markdown, ocr_raw_numbers)。失败时返回 ("", [])。
     """
     api_key = os.getenv("SILICONFLOW_OCR_API_KEY")
     if not api_key:
         raise ValueError(
             "SILICONFLOW_OCR_API_KEY 未配置。"
             "请在 .env 文件中设置该密钥以使用 PaddleOCR-VL 引擎。"
-        )
+        )  # noqa: will be caught by caller and return ("", [])
 
     # 读取并进行 Base64 编码
     with open(image_path, "rb") as f:
@@ -179,24 +212,28 @@ async def fetch_medical_report_ocr(image_path: str) -> str:
 
     if "choices" not in data or not data["choices"]:
         logger.error("硅基流动 API 返回的内容为空或结构异常")
-        return ""
+        return "", []
 
     raw_text = data["choices"][0]["message"].get("content", "")
+
+    # [ADR-035] 在此处提取 OCR 原始数值指纹（这是大模型清洗前的真实值）
+    ocr_raw_numbers = _extract_lab_numbers(raw_text)
+    logger.info(f"[PaddleOCR] 提取到 {len(ocr_raw_numbers)} 个原始数值指纹")
 
     # 如果 PaddleOCR-VL 已经输出了带 Markdown 表格的格式化内容，直接采纳
     if _has_markdown_table(raw_text):
         logger.info("[PaddleOCR] 模型已返回结构化 Markdown，直接采纳")
-        return _fix_arrow_placement(raw_text)
+        return _fix_arrow_placement(raw_text), ocr_raw_numbers
 
     # 否则调用极速小模型将纯文本清洗为 Markdown 表格文档
     logger.info("[PaddleOCR] 模型返回纯文本，触发 Qwen 极速 Markdown 清洗管道")
     cleaned_md = await _reformat_to_markdown(raw_text, api_key)
     if cleaned_md:
-        return _fix_arrow_placement(cleaned_md)
+        return _fix_arrow_placement(cleaned_md), ocr_raw_numbers
 
     # 彻底兜底：将原始文本包装为最基本的 Markdown
     logger.warning("[PaddleOCR] 清洗管道也失败了，使用原始文本降级包装")
-    return f"## 原始识别结果\n\n{raw_text}\n\n> ⚠️ 以上内容由 VLM 自动识别，未能结构化排版。"
+    return f"## 原始识别结果\n\n{raw_text}\n\n> ⚠️ 以上内容由 VLM 自动识别，未能结构化排版。", ocr_raw_numbers
 
 
 async def _reformat_to_markdown(raw_text: str, api_key: str) -> str | None:

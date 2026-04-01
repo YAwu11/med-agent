@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { FileText, Columns2, AlignJustify, AlertTriangle } from "lucide-react";
+import { FileText, Columns2, AlignJustify, AlertTriangle, SearchCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Streamdown } from "streamdown";
 import { streamdownPlugins } from "@/core/streamdown";
@@ -13,6 +13,8 @@ interface LabMarkdownViewerProps {
   isAbnormal?: boolean;
   evidenceId?: string;
   caseId?: string | null;
+  /** [ADR-035] OCR 原始数值指纹，用于与 LLM 清洗后数值交叉对账 */
+  ocrRawNumbers?: string[];
 }
 
 /** 
@@ -128,17 +130,64 @@ function validateLabResults(headers: string[], rows: string[][]): Map<number, st
 }
 
 /**
+ * [ADR-035] OCR↔LLM 数值交叉验证
+ * 比对表格中“结果”列的每个数值与 OCR 原始指纹，找出被 LLM 清洗管道篡改的数值
+ */
+function crossValidateNumbers(
+  rows: string[][],
+  resultColIdx: number,
+  ocrRawNumbers: string[]
+): Map<number, { ocrValue: string; llmValue: string }> {
+  const mismatches = new Map<number, { ocrValue: string; llmValue: string }>();
+  if (!ocrRawNumbers || ocrRawNumbers.length === 0) return mismatches;
+
+  const ocrSet = new Set(ocrRawNumbers);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length <= resultColIdx) continue;
+
+    const cell = row[resultColIdx] || "";
+    // 提取数值（忽略箭头与空格）
+    const numMatch = cell.replace(/[↑↓]/g, "").trim().match(/([\d.]+)/);
+    if (!numMatch?.[1]) continue;
+    const llmValue = numMatch[1];
+
+    // 严格匹配：OCR 原始数据中必须存在完全相同的数字
+    if (ocrSet.has(llmValue)) continue;
+
+    // 模糊匹配：允许 ±0.01 误差（处理 "5.5" vs "5.50" 的情况）
+    const llmFloat = parseFloat(llmValue);
+    const fuzzyMatch = ocrRawNumbers.find(n => {
+      const diff = Math.abs(parseFloat(n) - llmFloat);
+      return diff < 0.011;
+    });
+
+    if (!fuzzyMatch) {
+      // 在 OCR 原始数据中找不到任何近似值，标记为不匹配
+      mismatches.set(i, { ocrValue: "未在OCR原始数据中找到匹配", llmValue });
+    } else if (fuzzyMatch !== llmValue) {
+      // 找到了近似值但不完全一致，显示 OCR 原始值
+      mismatches.set(i, { ocrValue: fuzzyMatch, llmValue });
+    }
+  }
+  return mismatches;
+}
+
+/**
  * 可编辑单元格组件：点击即可编辑，失焦自动保存
  */
 function EditableCell({ 
   value, 
   isAbnormal, 
   warning,
+  ocrMismatch,
   onChange 
 }: { 
   value: string; 
   isAbnormal?: boolean; 
   warning?: string;
+  ocrMismatch?: string;
   onChange: (newVal: string) => void;
 }) {
   const ref = useRef<HTMLTableCellElement>(null);
@@ -171,9 +220,10 @@ function EditableCell({
         "px-4 py-2.5 text-slate-700 align-middle outline-none cursor-text",
         "focus:bg-blue-50 focus:ring-2 focus:ring-inset focus:ring-blue-300 transition-all",
         isAbnormal && "text-red-700 font-bold",
-        warning && "underline decoration-wavy decoration-amber-500"
+        warning && "underline decoration-wavy decoration-amber-500",
+        ocrMismatch && "underline decoration-wavy decoration-purple-500 bg-purple-50/40"
       )}
-      title={warning}
+      title={ocrMismatch || warning}
     >
       {value}
     </td>
@@ -219,7 +269,7 @@ function rebuildBeforeTable(lines: BeforeLine[]): string {
  *   - 自动验证：箭头与参考区间不一致时显示警告
  *   - 支持单列/双列布局切换
  */
-export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, caseId }: LabMarkdownViewerProps) {
+export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, caseId, ocrRawNumbers }: LabMarkdownViewerProps) {
   const [dualColumn, setDualColumn] = useState(false);
 
   // 解析 Markdown 为 header + table
@@ -244,6 +294,12 @@ export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, case
     let col = parsed.headers.findIndex(h => /结果|测定值|检测值|数值/i.test(h));
     return col === -1 ? 3 : col;
   }, [parsed.headers]);
+
+  // [ADR-035] OCR↔LLM 数值交叉验证
+  const mismatches = useMemo(() => 
+    crossValidateNumbers(tableRows, resultColFallback, ocrRawNumbers || []),
+    [tableRows, resultColFallback, ocrRawNumbers]
+  );
 
   // 动态将 beforeLines 分组为 "markdown" 和 "fields" 以供独立渲染
   const beforeBlocks = useMemo(() => {
@@ -346,6 +402,7 @@ export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, case
           const rowText = row.join("");
           const rowIsAbnormal = rowText.includes("↑") || rowText.includes("↓");
           const rowWarning = warnings.get(actualIdx);
+          const rowMismatch = mismatches.get(actualIdx);
           
           return (
             <tr
@@ -354,17 +411,23 @@ export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, case
                 "border-b border-slate-100 transition-colors group",
                 rowIsAbnormal && "bg-red-50 border-l-[3px] border-l-red-500",
                 rowWarning && "bg-amber-50/60 border-l-[3px] border-l-amber-500",
-                !rowIsAbnormal && !rowWarning && "hover:bg-blue-50/30"
+                rowMismatch && !rowIsAbnormal && !rowWarning && "bg-purple-50/40 border-l-[3px] border-l-purple-400",
+                !rowIsAbnormal && !rowWarning && !rowMismatch && "hover:bg-blue-50/30"
               )}
             >
               {row.map((cell, ci) => {
                 const cellIsAbnormal = cell.includes("↑") || cell.includes("↓");
+                // [ADR-035] 只在「结果」列显示交叉验证的 mismatch 提示
+                const cellMismatch = (ci === resultColFallback || ci === 3) && rowMismatch
+                  ? `⚠️ OCR原始值: ${rowMismatch.ocrValue}，LLM清洗后: ${rowMismatch.llmValue}`
+                  : undefined;
                 return (
                   <EditableCell
                     key={ci}
                     value={cell}
                     isAbnormal={cellIsAbnormal}
                     warning={((ci === resultColFallback) || (ci === 3)) && rowWarning ? rowWarning : undefined}
+                    ocrMismatch={cellMismatch}
                     onChange={(newVal) => handleCellChange(actualIdx, ci, newVal)}
                   />
                 );
@@ -374,7 +437,7 @@ export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, case
         })}
       </tbody>
     </table>
-  ), [parsed.headers, warnings, handleCellChange]);
+  ), [parsed.headers, warnings, mismatches, handleCellChange]);
 
   // 双列拆分
   const midPoint = Math.ceil(tableRows.length / 2);
@@ -401,6 +464,14 @@ export function LabMarkdownViewer({ rawText, title, isAbnormal, evidenceId, case
             <span className="flex items-center gap-1 bg-amber-50 text-amber-700 text-xs font-bold px-2.5 py-1 rounded-full border border-amber-200">
               <AlertTriangle className="h-3.5 w-3.5" />
               {warnings.size} 项待核实
+            </span>
+          )}
+
+          {/* [ADR-035] OCR↔LLM 数值对账异常统计 */}
+          {mismatches.size > 0 && (
+            <span className="flex items-center gap-1 bg-purple-50 text-purple-700 text-xs font-bold px-2.5 py-1 rounded-full border border-purple-200">
+              <SearchCheck className="h-3.5 w-3.5" />
+              {mismatches.size} 项数值待核对
             </span>
           )}
 

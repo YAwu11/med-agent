@@ -45,8 +45,9 @@ class LabOCRAnalyzer:
              logger.warning(f"File missing, skipping enhancement: {optimized_path}")
 
         # Step 2: Extract text using VLM (使用压缩后的图以加速传输和推理)
-        ocr_markdown = await fetch_medical_report_ocr(optimized_path)
-        logger.info(f"VLM OCR yield ({original_filename}): {len(ocr_markdown)} chars" if ocr_markdown else f"VLM Empty ({original_filename})")
+        # [ADR-035] 返回值变为 (markdown, ocr_raw_numbers) 元组
+        ocr_markdown, ocr_raw_numbers = await fetch_medical_report_ocr(optimized_path)
+        logger.info(f"VLM OCR yield ({original_filename}): {len(ocr_markdown)} chars, {len(ocr_raw_numbers)} numbers" if ocr_markdown else f"VLM Empty ({original_filename})")
 
         evidence_title = original_filename
         if ocr_markdown:
@@ -67,5 +68,7 @@ class LabOCRAnalyzer:
             evidence_type="lab",
             evidence_title=evidence_title,
             ai_analysis_text=ocr_markdown,
+            # [ADR-035] 存储 OCR 原始数值指纹，前端用于交叉验证 LLM 清洗后数值
+            structured_data={"ocr_raw_numbers": ocr_raw_numbers} if ocr_raw_numbers else None,
             enhanced_file_path=f"/mnt/user-data/outputs/{enhanced_name}" if Path(enhanced_host).exists() else None
         )
