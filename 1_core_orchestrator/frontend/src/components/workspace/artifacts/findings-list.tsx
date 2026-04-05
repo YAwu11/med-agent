@@ -2,7 +2,6 @@ import { CheckIcon, XIcon, MessageSquareIcon, PlusIcon, MousePointerIcon, Square
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
 import type { Finding, CanvasTool } from "./bbox-canvas";

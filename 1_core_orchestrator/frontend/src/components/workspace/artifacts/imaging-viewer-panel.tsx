@@ -1,6 +1,5 @@
-import { ScanLineIcon, XIcon, EditIcon, RefreshCwIcon, CheckCircleIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { ScanLineIcon, XIcon, EditIcon, CheckCircleIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import {
   Artifact,
@@ -33,7 +32,7 @@ export function ImagingViewerPanel({
   report,
   onClose,
   onReEdit,
-  onReJudge,
+  onReJudge: _onReJudge,
 }: {
   className?: string;
   threadId: string;

@@ -14,20 +14,16 @@ import {
   Eye,
   MoreHorizontal,
   ChevronRight,
-  ChevronDown,
   X,
   Check,
   RefreshCw,
   Sparkles,
-  AlertCircle,
   Inbox,
   Zap,
   Clock,
-  ArrowRight,
   Send,
   Loader2,
   Copy,
-  ExternalLink,
   Hash,
 } from "lucide-react";
 import React, { useState, useCallback, useRef, useEffect } from "react";
@@ -76,13 +72,6 @@ interface DocChunk {
   docnm_kwd: string;
   doc_type_kwd: string;
   char_count: number;
-}
-
-interface FolderNode {
-  path: string;
-  name: string;
-  children: FolderNode[];
-  kbs: KnowledgeBase[];
 }
 
 interface ApiKnowledgeBase {
@@ -333,12 +322,12 @@ export default function DoctorKnowledgePage() {
 
   // Core data
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
-  const [isLoadingKBs, setIsLoadingKBs] = useState(true);
+  const [, setIsLoadingKBs] = useState(true);
   const [activeFolder, setActiveFolder] = useState("/");
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [docs, setDocs] = useState<Document[]>([]);
-  const [isLoadingDocs, setIsLoadingDocs] = useState(false);
+  const [, setIsLoadingDocs] = useState(false);
   const [activeTab, setActiveTab] = useState<"docs" | "search" | "create">("docs");
 
   // Retrieval test
@@ -611,14 +600,6 @@ export default function DoctorKnowledgePage() {
   }, [BASE, loadKBs, selectedKB]);
 
   // ── Upload document ──
-  const handleUpload = useCallback(async () => {
-    if (!selectedKB) {
-      toast.error("请先选择一个知识库");
-      return;
-    }
-    fileInputRef.current?.click();
-  }, [selectedKB]);
-
   const handleFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedKB) return;
@@ -665,7 +646,7 @@ export default function DoctorKnowledgePage() {
         setDocs(mapDocuments(data.data?.documents ?? []));
       }
       toast.success("同步完成");
-    } catch (e) {
+    } catch {
       toast.error("同步失败");
     } finally {
       setIsSyncing(false);
@@ -1027,7 +1008,7 @@ export default function DoctorKnowledgePage() {
                     文档列表 ({docs.length})
                   </h3>
                   <div className="space-y-2">
-                    {docs.map((doc, idx) => (
+                    {docs.map((doc) => (
                       <div
                         key={doc.doc_name}
                         className="flex items-center gap-4 p-4 rounded-xl border border-slate-200 bg-white hover:shadow-sm transition-all group"

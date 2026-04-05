@@ -1,15 +1,12 @@
 "use client";
 
 import {
-  BarChart3,
   TrendingUp,
   Users,
   Clock,
   AlertTriangle,
   CheckCircle2,
   Activity,
-  ImageIcon,
-  FileText,
   Zap,
   HeartPulse,
 } from "lucide-react";

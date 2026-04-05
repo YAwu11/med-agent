@@ -14,9 +14,7 @@ import {
   Inbox,
   Upload,
   Plus,
-  X,
   Loader2,
-  Paperclip,
   Trash2,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -27,7 +25,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Textarea } from "@/components/ui/textarea";
 import { getBackendBaseURL } from "@/core/config";
 import { cn } from "@/lib/utils";
 
@@ -109,17 +106,8 @@ export default function DoctorQueuePage() {
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [selectedCase, setSelectedCase] = useState<CaseItem | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isLive, setIsLive] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
 
   // ── New Case Dialog state ──
-  const [showNewCase, setShowNewCase] = useState(false);
-  const [newCaseForm, setNewCaseForm] = useState({
-    name: "", age: "", sex: "男", phone: "",
-    chief_complaint: "", present_illness: "",
-    priority: "medium",
-  });
-  const [newCaseFiles, setNewCaseFiles] = useState<File[]>([]);
   const [isCreating, setIsCreating] = useState(false);
 
   // Fetch cases from API
@@ -130,15 +118,12 @@ export default function DoctorQueuePage() {
       const data = await res.json();
       setCases(data.cases as CaseItem[]);
       setCounts(data.counts);
-      setIsLive(true);
       // Auto-select first if nothing selected
       if (data.cases.length > 0) {
         setSelectedCase((prev) => prev ?? (data.cases[0] as CaseItem));
       }
     } catch {
       console.info("[Queue] API unavailable");
-    } finally {
-      setIsLoading(false);
     }
   };
 

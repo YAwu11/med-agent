@@ -7,8 +7,6 @@ import {
   ArtifactContent,
   ArtifactHeader,
   ArtifactTitle,
-  ArtifactActions,
-  ArtifactAction,
 } from "@/components/ai-elements/artifact";
 import { Button } from "@/components/ui/button";
 import type { ImagingReport } from "@/core/imaging/api";
@@ -29,10 +27,10 @@ type SummaryDoctorResult = {
 
 export function DiagnosticDashboard({
   className,
-  threadId,
+  threadId: _threadId,
   pendingImaging,
   reviewedImaging,
-  onClose,
+  onClose: _onClose,
   onOpenImagingReview,
   onOpenImagingViewer,
   onGenerateGlobalDiagnosis,

@@ -3,7 +3,6 @@ import Link from "next/link";
 import React from "react";
 import { Toaster } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 
 const navItems = [
