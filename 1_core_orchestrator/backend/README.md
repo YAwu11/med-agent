@@ -222,6 +222,40 @@ Direct access: LangGraph at http://localhost:2024, Gateway at http://localhost:8
 
 On Windows hosts with application control enabled, prefer the module form above. `make gateway` now uses `uv run python -m uvicorn ...` internally to avoid `uvicorn` console-script blocking.
 
+### Windows helper for MCP + local services
+
+From the repository root, use the PowerShell helper below to start the local service set that the medical workflow depends on:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start/start_all_with_mcp.ps1
+```
+
+That helper starts these services on Windows in one pass:
+
+- LangGraph on `127.0.0.1:2024`
+- Gateway on `localhost:8001`
+- Chest X-ray MCP on `localhost:8002`
+- Brain tumor MCP on `localhost:8003`
+- RAGFlow Lite on `localhost:9380`
+
+Important local-dev notes:
+
+- In this checkout, `backend/.venv/Scripts/langgraph.exe` can fail with `uv trampoline failed to canonicalize script path`; the helper works around that by calling the Click entrypoint through `python -c`.
+- The helper bootstraps `pip` inside `backend/.venv` if it is missing, then installs `nibabel` as a required brain-pipeline dependency and `antspyx` as an optional upgrade for richer spatial localization.
+- If brain weights or atlas files are not installed yet, the `8003` service still starts and returns completed responses with `is_mock_fallback: true`. That is expected until the local model assets are present.
+
+### Brain MCP live smoke test
+
+To verify the real `backend -> 8003 MCP service` path without any model weights, run the live smoke test from the backend directory:
+
+```powershell
+$env:RUN_BRAIN_MCP_LIVE = "1"
+$env:PYTHONPATH = "."
+.\.venv\Scripts\python.exe -m pytest tests/test_brain_mcp_live.py -v -s
+```
+
+The test generates a synthetic `.nii.gz` volume, calls the live MCP service on `localhost:8003`, and accepts either full results or a mock-fallback payload as long as the response shape is valid.
+
 ---
 
 ## Project Structure

@@ -93,6 +93,18 @@ make lint       # Lint with ruff
 make format     # Format code with ruff
 ```
 
+Windows-specific local helper:
+```powershell
+powershell -ExecutionPolicy Bypass -File ..\scripts\start\start_all_with_mcp.ps1
+```
+
+This helper starts LangGraph, Gateway, chest MCP, brain MCP, and RAGFlow Lite together. It also bootstraps `pip` inside `backend/.venv` when needed, installs `nibabel` as the minimum brain-pipeline dependency, and attempts to install `antspyx` for full spatial localization support.
+
+If `backend/.venv\Scripts\langgraph.exe` fails on Windows with `uv trampoline failed to canonicalize script path`, use the direct Click-entrypoint form that the helper script now uses internally:
+```powershell
+& .\.venv\Scripts\python.exe -c "import os; os.chdir(r'<ABS_BACKEND_PATH>'); from langgraph_cli.cli import cli; cli()" dev --no-browser --allow-blocking --no-reload --server-log-level info --host 127.0.0.1 --port 2024 --config <ABS_BACKEND_PATH>\langgraph.json
+```
+
 Regression tests related to Docker/provisioner behavior:
 - `tests/test_docker_sandbox_mode_detection.py` (mode detection from `config.yaml`)
 - `tests/test_provisioner_kubeconfig.py` (kubeconfig file/directory handling)
@@ -100,6 +112,7 @@ Regression tests related to Docker/provisioner behavior:
 - `tests/test_appointment_router.py` (Pydantic v2 patient-intake patch model config regression coverage plus lab OCR evidence normalization coverage)
 - `tests/test_uploads_router.py` (direct upload handler coverage for thread-local writes, markdown sidecars, and unsafe filename normalization)
 - `tests/test_imaging_reports_router.py` (stateless analyze-cv fallback coverage when `image_url` is omitted and the case already has imaging evidence)
+- `tests/test_brain_mcp_live.py` (opt-in local smoke test for the live `localhost:8003` brain MCP path using a synthetic NIfTI volume; accepts mock-fallback output when weights are absent)
 - `tests/test_dependency_warnings.py` (requests import warning regression coverage for transitive dependency compatibility)
 - `tests/test_gateway_start_commands.py` (host-side gateway startup scripts must use `uv run python -m uvicorn ...` to avoid Windows console-entrypoint blocking)
 
