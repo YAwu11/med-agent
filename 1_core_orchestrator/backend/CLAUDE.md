@@ -125,6 +125,9 @@ Boundary check (harness → app import firewall):
 
 CI now runs the imaging regression slice via `.github/workflows/doctor-imaging-ci.yml`. That workflow also runs the frontend Vitest, Playwright, lint, typecheck, and build checks for doctor-imaging changes.
 
+Git tracking note:
+- `backend/.gitignore` intentionally re-allows `app/**/*.py`, `packages/**/*.py`, `scripts/**/*.py`, and `tests/**/*.py` so new backend source/tests are not silently omitted from commits; top-level probes like benchmarks/debug helpers remain ignored unless explicitly added.
+
 ## Architecture
 
 ### Harness / App Split

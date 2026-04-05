@@ -84,6 +84,16 @@ class Paths:
         """Root directory for all custom agents: `{base_dir}/agents/`."""
         return self.base_dir / "agents"
 
+    @property
+    def app_data_dir(self) -> Path:
+        """Backward-compatible alias for the application data root."""
+        return self.base_dir
+
+    @property
+    def data_dir(self) -> Path:
+        """Backward-compatible alias used by legacy task/case stores."""
+        return self.app_data_dir
+
     def agent_dir(self, name: str) -> Path:
         """Directory for a specific agent: `{base_dir}/agents/{name}/`."""
         return self.agents_dir / name.lower()
