@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.local_paddle_ocr import fetch_medical_report_ocr
+from app.gateway.services.paddle_ocr import fetch_medical_report_ocr as fetch_medical_report_ocr_remote
 from app.core.config.paths import get_paths
 
 
@@ -22,8 +23,14 @@ class LabOCRAnalyzer:
         
         safe_filename = Path(image_path).name
 
-        # PPStructureV3 → 纯文本 → Qwen3.5-35B-A3B → Markdown
+        # 优先本地 OCR；若本地依赖缺失或产空，则自动回退到云端 OCR，避免整条上传链路静默中断。
         ocr_markdown, ocr_raw_numbers = await fetch_medical_report_ocr(image_path)
+        if not ocr_markdown:
+            logger.warning(
+                f"Local OCR returned empty result for {original_filename}; falling back to remote PaddleOCR-VL"
+            )
+            ocr_markdown, ocr_raw_numbers = await fetch_medical_report_ocr_remote(image_path)
+
         logger.info(
             f"OCR yield ({original_filename}): {len(ocr_markdown)} chars, {len(ocr_raw_numbers)} raw numbers"
             if ocr_markdown else f"OCR Empty ({original_filename})"

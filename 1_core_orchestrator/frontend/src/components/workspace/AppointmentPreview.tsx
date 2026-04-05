@@ -27,6 +27,15 @@ interface EvidenceItem {
   findings_brief?: string;
   ocr_summary?: string;
   is_abnormal?: boolean;
+  pipeline?: string;
+  viewer_kind?: string;
+  modality?: string;
+  review_status?: string;
+  report_text?: string;
+  spatial_info?: {
+    location?: string;
+    clinical_warning?: string;
+  };
 }
 
 interface AppointmentPreviewData {
@@ -62,6 +71,28 @@ const priorityConfig: Record<string, { label: string; color: string; dot: string
   medium: { label: "中", color: "bg-blue-50 text-blue-700 border-blue-200", dot: "bg-blue-500" },
   low: { label: "低", color: "bg-slate-50 text-slate-600 border-slate-200", dot: "bg-slate-400" },
 };
+
+function isBrainEvidence(ev: EvidenceItem): boolean {
+  return (
+    ev.pipeline === "brain_nifti_v1" ||
+    ev.viewer_kind === "brain_spatial_review" ||
+    ev.modality?.startsWith("brain_mri") === true
+  );
+}
+
+function formatReviewStatus(status?: string): string | null {
+  switch (status) {
+    case "reviewed":
+      return "已医生复核";
+    case "pending_review":
+    case "pending_doctor_review":
+      return "待医生复核";
+    case "processing":
+      return "处理中";
+    default:
+      return null;
+  }
+}
 
 // ── Component ─────────────────────────────────────────────
 
@@ -237,6 +268,8 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
           <div className="space-y-1.5">
             {data.evidence_items.map((ev) => {
               const isSelected = selectedEvidence.has(ev.id);
+              const brainEvidence = isBrainEvidence(ev);
+              const reviewStatusLabel = brainEvidence ? formatReviewStatus(ev.review_status) : null;
               return (
                 <label
                   key={ev.id}
@@ -256,7 +289,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs">
-                        {ev.type === "imaging" ? "🫁" : "🧪"}
+                        {brainEvidence ? "🧠" : ev.type === "imaging" ? "🫁" : "🧪"}
                       </span>
                       <span className="text-xs font-medium text-slate-700 truncate">
                         {ev.title}
@@ -265,9 +298,22 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
                         <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
                       )}
                     </div>
+                    {reviewStatusLabel && (
+                      <p className="mt-0.5 text-[10px] text-slate-500">{reviewStatusLabel}</p>
+                    )}
+                    {brainEvidence && ev.spatial_info?.location && (
+                      <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                        定位区域：{ev.spatial_info.location}
+                      </p>
+                    )}
                     {ev.findings_brief && (
                       <p className="text-[10px] text-slate-500 mt-0.5 truncate">
-                        AI 发现 {ev.findings_count} 处: {ev.findings_brief}
+                        AI 发现 {ev.findings_count ?? 0} 处: {ev.findings_brief}
+                      </p>
+                    )}
+                    {brainEvidence && ev.report_text && (
+                      <p className="text-[10px] text-slate-500 mt-0.5 line-clamp-2">
+                        {ev.report_text}
                       </p>
                     )}
                     {ev.ocr_summary && (

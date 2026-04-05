@@ -60,6 +60,7 @@ export function BrainSpatialReview({
   status: initialStatus,
   threadId
 }: BrainSpatialReviewProps) {
+  const normalizedInitialStatus = initialStatus === "report_generated" ? "reviewed" : initialStatus;
   const [editableInfo, setEditableInfo] = useState<EditableSpatialInfo>({
     location: spatialInfo?.location ?? "",
     vol_et: spatialInfo?.volumes?.ET ?? 0,
@@ -75,10 +76,12 @@ export function BrainSpatialReview({
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<BrainReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState(initialStatus);
+  const [status, setStatus] = useState(normalizedInitialStatus);
   const [isOtherLocation, setIsOtherLocation] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
   const [revisionNote, setRevisionNote] = useState('');
+  const isPendingReview = status === "pending_review" || status === "pending_doctor_review";
+  const isReviewed = status === "reviewed" || status === "report_generated";
 
   const AAL_ZONES = [
     "额叶", "顶叶", "枕叶", "颞叶", 
@@ -127,7 +130,7 @@ export function BrainSpatialReview({
       
       const data = (await res.json()) as { report?: BrainReport | null };
       setReport(data.report ?? null);
-      setStatus("report_generated");
+      setStatus("reviewed");
       
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "报告生成失败");
@@ -148,12 +151,12 @@ export function BrainSpatialReview({
       <div className="border-b px-4 py-3 bg-white flex items-center justify-between sticky top-0 z-10">
         <h3 className="text-lg font-medium flex items-center gap-2 text-slate-800">
           🧠脑肿瘤分析结果
-          {status === 'pending_doctor_review' && (
+          {isPendingReview && (
             <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full animate-pulse border border-amber-200">
               待医生审核
             </span>
           )}
-          {status === 'report_generated' && (
+          {isReviewed && (
             <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-1 rounded-full border border-emerald-200">
               报告已生成
             </span>
@@ -224,7 +227,7 @@ export function BrainSpatialReview({
                       }
                     }}
                     className="w-full text-sm p-2 border rounded focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
-                    disabled={status === "report_generated"}
+                    disabled={isReviewed}
                   >
                     {AAL_ZONES.map(z => <option key={z} value={z}>{z}</option>)}
                   </select>
@@ -236,12 +239,12 @@ export function BrainSpatialReview({
                       value={editableInfo.location}
                       onChange={(e) => setEditableInfo({...editableInfo, location: e.target.value})}
                       className="w-full text-sm p-2 border rounded focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     />
                     <button 
                       onClick={() => setIsOtherLocation(false)}
                       className="whitespace-nowrap px-3 text-sm text-blue-600 border border-blue-600 rounded hover:bg-blue-50"
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     >返回选择</button>
                   </div>
                 )}
@@ -257,7 +260,7 @@ export function BrainSpatialReview({
                       value={editableInfo.vol_et}
                       onChange={(e) => setEditableInfo({...editableInfo, vol_et: e.target.value})}
                       className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-400 outline-none"
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     />
                     <span className="text-slate-500 text-xs ml-1">cm³</span>
                   </div>
@@ -270,7 +273,7 @@ export function BrainSpatialReview({
                       value={editableInfo.vol_ed}
                       onChange={(e) => setEditableInfo({...editableInfo, vol_ed: e.target.value})}
                       className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-400 outline-none"
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     />
                     <span className="text-slate-500 text-xs ml-1">cm³</span>
                   </div>
@@ -283,7 +286,7 @@ export function BrainSpatialReview({
                       value={editableInfo.vol_ncr}
                       onChange={(e) => setEditableInfo({...editableInfo, vol_ncr: e.target.value})}
                       className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-400 outline-none"
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     />
                     <span className="text-slate-500 text-xs ml-1">cm³</span>
                   </div>
@@ -296,7 +299,7 @@ export function BrainSpatialReview({
                       value={editableInfo.vol_wt}
                       onChange={(e) => setEditableInfo({...editableInfo, vol_wt: e.target.value})}
                       className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-400 outline-none font-medium"
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     />
                     <span className="text-slate-500 text-xs ml-1">cm³</span>
                   </div>
@@ -315,9 +318,9 @@ export function BrainSpatialReview({
                       className="sr-only peer" 
                       checked={editableInfo.crosses_midline}
                       onChange={(e) => setEditableInfo({...editableInfo, crosses_midline: e.target.checked})}
-                      disabled={status === "report_generated"}
+                      disabled={isReviewed}
                     />
-                    <div className={"w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500 " + (status === "report_generated" ? "opacity-50" : "")}></div>
+                    <div className={"w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500 " + (isReviewed ? "opacity-50" : "")}></div>
                   </label>
                 </div>
 
@@ -330,7 +333,7 @@ export function BrainSpatialReview({
                         value={editableInfo.brainstem_dist}
                         onChange={(e) => setEditableInfo({...editableInfo, brainstem_dist: e.target.value})}
                         className="w-full bg-transparent outline-none font-medium"
-                        disabled={status === "report_generated"}
+                        disabled={isReviewed}
                       />
                       <span className="text-slate-400 text-xs ml-1">mm</span>
                     </div>
@@ -343,7 +346,7 @@ export function BrainSpatialReview({
                         value={editableInfo.midline_shift}
                         onChange={(e) => setEditableInfo({...editableInfo, midline_shift: e.target.value})}
                         className="w-full bg-transparent outline-none font-medium"
-                        disabled={status === "report_generated"}
+                        disabled={isReviewed}
                       />
                       <span className="text-slate-400 text-xs ml-1">mm</span>
                     </div>
@@ -352,7 +355,7 @@ export function BrainSpatialReview({
               </div>
 
               {/* Action Button */}
-              {status === "pending_doctor_review" && (
+                {isPendingReview && (
                  <div className="pt-4 mt-2 border-t space-y-3">
                     <div className="flex gap-3">
                       <button 

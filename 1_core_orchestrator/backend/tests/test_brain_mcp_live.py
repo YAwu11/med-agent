@@ -45,23 +45,31 @@ if not _brain_service_online():
     pytest.skip("Brain MCP live smoke requires a running service on localhost:8003", allow_module_level=True)
 
 
-def _write_synthetic_nifti(path: Path) -> None:
-    volume = np.zeros((32, 32, 16), dtype=np.float32)
-    volume[10:20, 10:20, 4:12] = 1.0
+def _write_synthetic_nifti(path: Path, value: float) -> None:
+    volume = np.zeros((64, 64, 48), dtype=np.float32)
+    volume += value
+    volume[20:44, 20:44, 14:34] += value * 0.5
     image = nibabel.Nifti1Image(volume, np.eye(4))
     nibabel.save(image, path)
 
 
 def test_brain_mcp_returns_completed_payload_for_synthetic_nifti(tmp_path: Path) -> None:
-    nifti_path = tmp_path / "synthetic_t1ce.nii.gz"
-    _write_synthetic_nifti(nifti_path)
+    case_dir = tmp_path / "synthetic_case"
+    case_dir.mkdir()
+    _write_synthetic_nifti(case_dir / "t1.nii.gz", 1.0)
+    _write_synthetic_nifti(case_dir / "t1ce.nii.gz", 2.0)
+    _write_synthetic_nifti(case_dir / "t2.nii.gz", 3.0)
+    _write_synthetic_nifti(case_dir / "flair.nii.gz", 4.0)
 
-    result = asyncio.run(analyze_brain_tumor_nifti_mcp(str(nifti_path), nifti_path.name))
+    result = asyncio.run(analyze_brain_tumor_nifti_mcp(str(case_dir), "synthetic_brats_case"))
 
     assert result is not None
     assert result["status"] == "completed"
     assert isinstance(result.get("spatial_info"), dict)
     assert isinstance(result.get("is_mock_fallback"), bool)
+    assert result.get("segmentation_backend") == "nnunetv2"
+    assert result.get("segmentation_is_mock") is False
+    assert isinstance(result.get("spatial_is_mock"), bool)
     assert isinstance(result.get("slice_png_path", ""), str)
 
     volumes = result["spatial_info"].get("volumes", {})

@@ -130,7 +130,11 @@ FastAPI application providing REST endpoints for frontend integration:
 
 Route-level regression coverage also includes `tests/test_cases_router.py`, which verifies `/api/cases/{case_id}/summary-readiness`, the HTTP 409 synthesis gate on `/api/cases/{case_id}/summary`, and that the diagnosis PUT route is only registered once.
 
-Upload and imaging review regression coverage also includes `tests/test_uploads_router.py` and `tests/test_imaging_reports_router.py`, which verify direct upload handler behavior (thread-local writes, markdown sidecars, unsafe filename normalization) and that stateless `/api/threads/{id}/imaging-reports/analyze-cv` can fall back to the existing case imaging evidence when the frontend omits `image_url`.
+Upload and imaging review regression coverage also includes `tests/test_uploads_router.py` and `tests/test_imaging_reports_router.py`, which verify direct upload handler behavior (thread-local writes, markdown sidecars, unsafe filename normalization, brain MRI sequence guidance only counting `.nii/.nii.gz` uploads, and a route-level 4-sequence upload -> brain-report -> doctor-review save flow) and that stateless `/api/threads/{id}/imaging-reports/analyze-cv` can fall back to the existing case imaging evidence when the frontend omits `image_url`. The same imaging report suite also locks doctor-review persistence so partial doctor edits keep existing `summary`, `densenet_probs`, and `rejected` payloads instead of wiping them. Repo-level automation for this slice now lives in `.github/workflows/doctor-imaging-ci.yml`, whose backend job runs these imaging regressions on pull requests and pushes that touch the relevant subtrees.
+
+Lab-report OCR now prefers the local `PPStructureV3 -> Qwen` pipeline, but automatically falls back to the existing cloud `PaddleOCR-VL` path when the local Paddle dependencies are unavailable or the local pass yields no markdown. This keeps `/api/threads/{id}/uploads` from returning a silently empty lab-analysis result on Windows machines that only ran `uv sync`.
+
+Run `python scripts/check_local_lab_ocr.py` inside `backend/` to see whether the current environment is in `local_ready` mode or `cloud_fallback` mode. To opt into the local `PPStructureV3` stack on Windows, run `powershell -ExecutionPolicy Bypass -File scripts/install_local_lab_ocr.ps1` from the repository root.
 
 Pydantic migration coverage also includes `tests/test_appointment_router.py`, which verifies the patient-intake patch model keeps `extra="allow"` behavior without emitting the Pydantic v1 class-config deprecation warning, and that confirmed OCR lab evidence is normalized to the case-domain `lab` / `patient_upload` vocabulary before persistence.
 
@@ -164,6 +168,14 @@ cp config.example.yaml config.yaml
 cd backend
 make install
 ```
+
+Optional Windows-only local lab OCR enhancement:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_local_lab_ocr.ps1
+```
+
+That optional script installs the pinned `paddlepaddle` / `paddleocr` / `paddlex` stack into `backend/.venv`. A plain `uv sync` intentionally does not install those heavyweight packages. Stop any running Gateway / LangGraph / MCP windows first, otherwise Windows can lock files inside `backend/.venv` and block the install.
 
 ### Configuration
 
@@ -241,7 +253,8 @@ That helper starts these services on Windows in one pass:
 Important local-dev notes:
 
 - In this checkout, `backend/.venv/Scripts/langgraph.exe` can fail with `uv trampoline failed to canonicalize script path`; the helper works around that by calling the Click entrypoint through `python -c`.
-- The helper bootstraps `pip` inside `backend/.venv` if it is missing, then installs `nibabel` as a required brain-pipeline dependency and `antspyx` as an optional upgrade for richer spatial localization.
+- The helper bootstraps `pip` inside `backend/.venv` if it is missing, then installs `nnunetv2` and `nibabel` as required brain-pipeline dependencies and `antspyx` as an optional upgrade for richer spatial localization.
+- The helper prints the current lab OCR mode before startup. `cloud_fallback` means local Paddle packages are missing from `backend/.venv` and uploads will use remote `PaddleOCR-VL` instead.
 - If brain weights or atlas files are not installed yet, the `8003` service still starts and returns completed responses with `is_mock_fallback: true`. That is expected until the local model assets are present.
 
 ### Brain MCP live smoke test
@@ -255,7 +268,7 @@ $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 .\.venv\Scripts\python.exe -m pytest tests/test_brain_mcp_live.py -v -s
 ```
 
-The test generates a synthetic `.nii.gz` volume, calls the live MCP service on `localhost:8003`, and accepts either full results or a mock-fallback payload as long as the response shape is valid. The extra `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` keeps third-party pytest plugins from interfering with this local-only smoke path.
+The test generates a synthetic 4-sequence BraTS-style case (`t1`, `t1ce`, `t2`, `flair`), calls the live MCP service on `localhost:8003`, and verifies that the round-trip completed and that segmentation is no longer using the mock backend. The extra `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` keeps third-party pytest plugins from interfering with this local-only smoke path.
 
 ---
 

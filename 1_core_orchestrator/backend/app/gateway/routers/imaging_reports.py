@@ -33,6 +33,22 @@ router = APIRouter(
     tags=["imaging-reports"],
 )
 
+
+def _extract_densenet_probs(ai_result_raw: dict[str, Any]) -> dict[str, Any]:
+    top_level_probs = ai_result_raw.get("densenet_probs")
+    if isinstance(top_level_probs, dict):
+        return top_level_probs
+
+    summary_probs = ai_result_raw.get("summary", {}).get("disease_probabilities", {})
+    return summary_probs if isinstance(summary_probs, dict) else {}
+
+
+def _ensure_finding_ids(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for finding in findings:
+        if not finding.get("id"):
+            finding["id"] = uuid.uuid4().hex[:8]
+    return findings
+
 def _get_reports_dir(thread_id: str) -> Path:
     """Get the imaging-reports directory for a thread."""
     paths = get_paths()
@@ -117,10 +133,11 @@ def submit_doctor_review(
     updated_report = update_report(report_id, submission.doctor_result)
     if not updated_report:
         raise HTTPException(status_code=500, detail="Failed to update report in database")
+    merged_doctor_result = updated_report.get("doctor_result") if isinstance(updated_report.get("doctor_result"), dict) else submission.doctor_result
 
     # [P1 Sync] Sync to cases table macro evidence array
     from app.gateway.services.case_db import update_case_evidence_from_report
-    update_case_evidence_from_report(thread_id, report_id, submission.doctor_result)
+    update_case_evidence_from_report(thread_id, report_id, merged_doctor_result)
 
     # 3. Write back to sandbox file to unblock the Agent Tool
     try:
@@ -131,7 +148,7 @@ def submit_doctor_review(
     # Support re-edit: increment version instead of rejecting already-reviewed reports
     data["version"] = data.get("version", 0) + 1
     data["status"] = "reviewed"
-    data["doctor_result"] = submission.doctor_result
+    data["doctor_result"] = merged_doctor_result
 
     report_file.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
@@ -233,7 +250,7 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
         ai_result_raw = await analyze_xray(local_image_path, enable_sam=enable_sam)
         
         # [CRITICAL FIX] Convert MCP format to frontend schema
-        findings = ai_result_raw.get("findings", [])
+        findings = _ensure_finding_ids(ai_result_raw.get("findings", []))
         colors = ["red", "amber", "purple", "teal"]
         try:
             from PIL import Image
@@ -270,7 +287,12 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
         # Format to our system's expected ai_result structure
         formatted_ai_result = {
             "findings": findings,
-            "densenet_probs": ai_result_raw.get("summary", {}).get("disease_probabilities", {})
+            "summary": ai_result_raw.get("summary", {}),
+            "densenet_probs": _extract_densenet_probs(ai_result_raw),
+            "rejected": ai_result_raw.get("rejected", []),
+            "pipeline": ai_result_raw.get("pipeline"),
+            "disclaimer": ai_result_raw.get("disclaimer"),
+            "model_version": ai_result_raw.get("pipeline"),
         }
     except Exception as e:
         logger.error(f"[HITL] MCP Call Failed: {e}", exc_info=True)

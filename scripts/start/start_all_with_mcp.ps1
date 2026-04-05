@@ -8,6 +8,8 @@ $BaseDir = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 $BackendDir = Join-Path $BaseDir "1_core_orchestrator\backend"
 $BackendPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $LangGraphConfig = Join-Path $BackendDir "langgraph.json"
+$LabOcrChecker = Join-Path $BackendDir "scripts\check_local_lab_ocr.py"
+$LocalLabOcrInstaller = Join-Path $BaseDir "scripts\install_local_lab_ocr.ps1"
 
 $RagflowDir = Join-Path $BaseDir "2_mcp_ragflow_lite"
 $RagflowPython = Join-Path $RagflowDir ".venv\Scripts\python.exe"
@@ -132,6 +134,22 @@ function Start-PythonProcess {
     return $process
 }
 
+function Get-LocalLabOcrStatus {
+    if (-not (Test-Path $BackendPython) -or -not (Test-Path $LabOcrChecker)) {
+        return $null
+    }
+
+    try {
+        $raw = & $BackendPython $LabOcrChecker --json
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+        return $raw | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+}
+
 Write-Host "=========================================" -ForegroundColor Cyan
 Write-Host " Starting MedAgent Services (v5) " -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
@@ -140,6 +158,20 @@ if (-not (Test-Path $BackendPython)) {
     throw "Backend Python not found at $BackendPython"
 }
 
+$LabOcrStatus = Get-LocalLabOcrStatus
+if ($null -eq $LabOcrStatus) {
+    Write-Host "WARNING: Unable to determine local lab OCR mode." -ForegroundColor Yellow
+} elseif ($LabOcrStatus.available) {
+    Write-Host "Local lab OCR mode: local_ready (PPStructureV3 available in backend .venv)." -ForegroundColor Green
+} else {
+    $missingModules = if ($LabOcrStatus.missing_modules) { $LabOcrStatus.missing_modules -join ", " } else { "unknown" }
+    Write-Host "Local lab OCR mode: cloud_fallback (missing: $missingModules)." -ForegroundColor Yellow
+    if (Test-Path $LocalLabOcrInstaller) {
+        Write-Host "  Optional enable command: powershell -ExecutionPolicy Bypass -File '$LocalLabOcrInstaller'" -ForegroundColor DarkYellow
+    }
+}
+
+Ensure-PythonModule -PythonPath $BackendPython -ModuleName "nnunetv2" -PackageName "nnunetv2" | Out-Null
 Ensure-PythonModule -PythonPath $BackendPython -ModuleName "nibabel" -PackageName "nibabel" | Out-Null
 Ensure-PythonModule -PythonPath $BackendPython -ModuleName "ants" -PackageName "antspyx" -Optional | Out-Null
 

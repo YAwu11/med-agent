@@ -24,6 +24,14 @@ VENTRICLE_R_LABELS = [122]
 
 import asyncio
 
+
+NNUNET_DATASET_DIRNAME = "Dataset002_BRATS19"
+NNUNET_TRAINER_DIRNAME = "nnUNetTrainer__nnUNetPlans__3d_fullres"
+NNUNET_REQUIRED_MODALITIES = ("t1", "t1ce", "t2", "flair")
+
+_nnunet_predictor = None
+_nnunet_model_output_dir = None
+
 async def run_pipeline(nifti_dir: str, original_filename: str) -> dict:
     """上传后自动执行 Step 1-4，产出空间数据和报告供返回。"""
     logger.info(f"Starting brain MRI analysis pipeline for {nifti_dir}")
@@ -108,7 +116,10 @@ async def run_pipeline(nifti_dir: str, original_filename: str) -> dict:
         "spatial_info": spatial_info,
         "slice_png_path": slice_png_path,
         "is_abnormal": has_abnormal,
-        "is_mock_fallback": is_mask_mock or is_spatial_mock
+        "is_mock_fallback": is_mask_mock or is_spatial_mock,
+        "segmentation_is_mock": is_mask_mock,
+        "spatial_is_mock": is_spatial_mock,
+        "segmentation_backend": "mock" if is_mask_mock else "nnunetv2",
     }
 
 def _find_file(directory: str, keyword: str) -> Optional[str]:
@@ -117,36 +128,166 @@ def _find_file(directory: str, keyword: str) -> Optional[str]:
             return os.path.join(directory, f)
     return None
 
+
+def _resolve_modality_path(directory: str, modality: str) -> Optional[str]:
+    exact_candidates = [
+        os.path.join(directory, f"{modality}.nii.gz"),
+        os.path.join(directory, f"{modality}.nii"),
+    ]
+    for candidate in exact_candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    lowered = sorted(os.listdir(directory))
+    for filename in lowered:
+        name = filename.lower()
+        if not (name.endswith(".nii") or name.endswith(".nii.gz")):
+            continue
+        if modality == "t1" and ("t1ce" in name or "t1c" in name):
+            continue
+        if modality == "t1" and "t1" in name:
+            return os.path.join(directory, filename)
+        if modality == "t1ce" and ("t1ce" in name or "t1c" in name):
+            return os.path.join(directory, filename)
+        if modality in ("t2", "flair") and modality in name:
+            return os.path.join(directory, filename)
+    return None
+
+
+def _build_mock_segmentation(reference_path: Optional[str]) -> np.ndarray:
+    if reference_path and os.path.exists(reference_path):
+        img = nib.load(reference_path)
+        shape = img.shape
+        mask = np.zeros(shape, dtype=np.uint8)
+        cx, cy, cz = shape[0] // 2, shape[1] // 2, shape[2] // 2
+        r = max(shape[0] // 10, 1)
+
+        y, x, z = np.ogrid[-cx:shape[0] - cx, -cy:shape[1] - cy, -cz:shape[2] - cz]
+        mask[x**2 + y**2 + z**2 <= (r * 1.5) ** 2] = 2
+        mask[x**2 + y**2 + z**2 <= r**2] = 4
+        mask[x**2 + y**2 + z**2 <= (r * 0.5) ** 2] = 1
+        return mask
+
+    return np.zeros((100, 100, 100), dtype=np.uint8)
+
+
+def _resolve_nnunet_model_output_dir() -> Optional[Path]:
+    candidate = Path(NNUNET_MODEL_DIR)
+    if (candidate / "dataset.json").exists() and (candidate / "plans.json").exists():
+        return candidate
+
+    nested_candidate = candidate / NNUNET_DATASET_DIRNAME / NNUNET_TRAINER_DIRNAME
+    if (nested_candidate / "dataset.json").exists() and (nested_candidate / "plans.json").exists():
+        return nested_candidate
+
+    if not candidate.exists():
+        return None
+
+    for child in candidate.iterdir():
+        inferred = child / NNUNET_TRAINER_DIRNAME
+        if (inferred / "dataset.json").exists() and (inferred / "plans.json").exists():
+            return inferred
+
+    return None
+
+
+def _load_nnunet_predictor(model_output_dir: Path):
+    global _nnunet_predictor, _nnunet_model_output_dir
+
+    if _nnunet_predictor is not None and _nnunet_model_output_dir == str(model_output_dir):
+        return _nnunet_predictor
+
+    import torch
+    from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    predictor = nnUNetPredictor(
+        tile_step_size=0.5,
+        use_gaussian=True,
+        use_mirroring=True,
+        perform_everything_on_device=device.type == "cuda",
+        device=device,
+        verbose=False,
+        verbose_preprocessing=False,
+        allow_tqdm=False,
+    )
+    predictor.initialize_from_trained_model_folder(
+        str(model_output_dir),
+        use_folds=None,
+        checkpoint_name="checkpoint_final.pth",
+    )
+
+    _nnunet_predictor = predictor
+    _nnunet_model_output_dir = str(model_output_dir)
+    return predictor
+
+
+def _prepare_nnunet_input(nifti_dir: str) -> tuple[np.ndarray, dict, tuple[int, int, int], str]:
+    modality_paths = {}
+    for modality in NNUNET_REQUIRED_MODALITIES:
+        modality_path = _resolve_modality_path(nifti_dir, modality)
+        if modality_path is None:
+            raise FileNotFoundError(f"Missing modality '{modality}' in {nifti_dir}")
+        modality_paths[modality] = modality_path
+
+    reference_image = nib.load(modality_paths["t1ce"])
+    reference_shape = reference_image.shape
+    spacing_xyz = tuple(float(value) for value in reference_image.header.get_zooms()[:3])
+
+    channels = []
+    for modality in NNUNET_REQUIRED_MODALITIES:
+        image = nib.load(modality_paths[modality])
+        if image.shape != reference_shape:
+            raise ValueError(f"Modality '{modality}' shape {image.shape} does not match reference shape {reference_shape}")
+        channel = np.asarray(image.get_fdata(), dtype=np.float32)
+        channels.append(np.transpose(channel, (2, 1, 0)))
+
+    input_image = np.ascontiguousarray(np.stack(channels, axis=0), dtype=np.float32)
+    image_properties = {"spacing": spacing_xyz[::-1]}
+    return input_image, image_properties, reference_shape, modality_paths["t1ce"]
+
+
+def _restore_prediction_shape(predicted_mask: np.ndarray, reference_shape: tuple[int, int, int]) -> np.ndarray:
+    predicted_mask = np.asarray(predicted_mask, dtype=np.uint8)
+
+    if predicted_mask.shape == reference_shape:
+        return predicted_mask
+
+    transposed_shape = tuple(reversed(reference_shape))
+    if predicted_mask.shape == transposed_shape:
+        return np.transpose(predicted_mask, (2, 1, 0)).astype(np.uint8)
+
+    raise ValueError(f"Unexpected nnU-Net output shape {predicted_mask.shape}; expected {reference_shape} or {transposed_shape}")
+
 def step1_segment(nifti_dir: str) -> tuple[np.ndarray, bool]:
     """调用 nnU-Net v2 预训练模型进行 3D 分割。返回 (mask, is_mock)"""
     logger.info("Executing Step 1: nnU-Net 3D Segmentation")
+
+    fallback_reference = _resolve_modality_path(nifti_dir, "t1ce") or _resolve_modality_path(nifti_dir, "t1")
+    model_output_dir = _resolve_nnunet_model_output_dir()
+    if model_output_dir is None:
+        logger.warning(f"nnU-Net model output dir not found under {NNUNET_MODEL_DIR}, returning mock mask")
+        return _build_mock_segmentation(fallback_reference), True
+
     try:
-        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-        logger.warning("nnU-Net prediction not fully implemented yet, returning mock mask")
-        is_mock = True
-        
-        t1c_path = os.path.join(nifti_dir, "t1ce.nii.gz")
-        if not os.path.exists(t1c_path):
-            t1c_path = _find_file(nifti_dir, "t1c") or _find_file(nifti_dir, "t1")
-            
-        if t1c_path and os.path.exists(t1c_path):
-            img = nib.load(t1c_path)
-            shape = img.shape
-            mask = np.zeros(shape, dtype=np.uint8)
-            cx, cy, cz = shape[0]//2, shape[1]//2, shape[2]//2
-            r = shape[0]//10
-            
-            y, x, z = np.ogrid[-cx:shape[0]-cx, -cy:shape[1]-cy, -cz:shape[2]-cz]
-            mask[x**2 + y**2 + z**2 <= (r*1.5)**2] = 2
-            mask[x**2 + y**2 + z**2 <= r**2] = 4
-            mask[x**2 + y**2 + z**2 <= (r*0.5)**2] = 1
-            return mask, is_mock
-        else:
-            return np.zeros((100, 100, 100), dtype=np.uint8), is_mock
-            
+        predictor = _load_nnunet_predictor(model_output_dir)
+        input_image, image_properties, reference_shape, fallback_reference = _prepare_nnunet_input(nifti_dir)
+        predicted_mask = predictor.predict_single_npy_array(
+            input_image,
+            image_properties,
+            segmentation_previous_stage=None,
+            output_file_truncated=None,
+            save_or_return_probabilities=False,
+        )
+        restored_mask = _restore_prediction_shape(predicted_mask, reference_shape)
+        logger.info(f"nnU-Net segmentation completed using model dir {model_output_dir}")
+        return restored_mask, False
     except ImportError:
         logger.warning("nnunetv2 not installed, returning mock mask")
-        return np.zeros((100, 100, 100), dtype=np.uint8), True
+        return _build_mock_segmentation(fallback_reference), True
+    except Exception as e:
+        logger.error(f"nnU-Net inference failed: {e}")
+        return _build_mock_segmentation(fallback_reference), True
 
 def step2_localize(t1ce_path: str, t1_path: str, tumor_mask: np.ndarray) -> dict:
     logger.info("Executing Step 2: Spatial Localization")
@@ -301,7 +442,6 @@ def _compute_overlap(tumor_mask: np.ndarray, atlas_data: np.ndarray, labels_map:
     overlap_counts = {}
     tumor_indices = tumor_mask > 0
     atlas_in_tumor = atlas_data[tumor_indices]
-    
     unique_labels, counts = np.unique(atlas_in_tumor, return_counts=True)
     
     regions = []

@@ -1,0 +1,92 @@
+name: Doctor Imaging CI
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/doctor-imaging-ci.yml
+      - 1_core_orchestrator/frontend/**
+      - 1_core_orchestrator/backend/**
+  push:
+    paths:
+      - .github/workflows/doctor-imaging-ci.yml
+      - 1_core_orchestrator/frontend/**
+      - 1_core_orchestrator/backend/**
+
+concurrency:
+  group: doctor-imaging-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 1_core_orchestrator/frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: 1_core_orchestrator/frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Vitest
+        run: pnpm test
+
+      - name: Run ESLint
+        run: pnpm lint
+
+      - name: Run typecheck
+        run: pnpm typecheck
+
+      - name: Build frontend
+        env:
+          BETTER_AUTH_SECRET: ci-build-placeholder-secret-32chars
+        run: pnpm build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright regression
+        run: pnpm test:e2e -- doctor-imaging-review
+
+  backend:
+    name: Backend Imaging Regression
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 1_core_orchestrator/backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --group dev
+
+      - name: Run imaging regressions
+        env:
+          PYTHONPATH: .
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: uv run pytest tests/test_uploads_router.py tests/test_imaging_reports_router.py -q

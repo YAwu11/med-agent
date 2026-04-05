@@ -36,6 +36,7 @@ _pspnet_model = None
 _pspnet_targets = None
 _densenet_model = None
 _medsam_predictor = None
+_warmed_up = False
 
 
 def _get_yolo():
@@ -100,7 +101,8 @@ def _get_medsam():
 def warmup_models():
     """Load all models now to avoid later bottlenecks."""
     global _warmed_up
-    if _warmed_up: return
+    if globals().get("_warmed_up", False):
+        return
     _logger.info("[P0] ========== Warming up all models ==========")
     _get_yolo()
     _get_pspnet()

@@ -56,6 +56,69 @@ def _build_summary_readiness(case) -> dict:
         "failed_files": guidance.get("failed_files") or [],
     }
 
+
+def _map_brain_review_status(raw_status: str | None) -> str:
+    normalized = (raw_status or "").strip().lower()
+    if normalized == "reviewed":
+        return "已复核"
+    if normalized in {"pending_review", "pending_doctor_review"}:
+        return "待医生复核"
+    if normalized in {"processing", "queued", "running"}:
+        return "处理中"
+    if normalized in {"failed", "error"}:
+        return "处理失败"
+    return "已完成"
+
+
+def _summarize_structured_findings(findings: object) -> str:
+    if not isinstance(findings, list):
+        return ""
+    labels: list[str] = []
+    for item in findings[:5]:
+        if isinstance(item, dict):
+            label = str(item.get("label") or item.get("class") or item.get("disease") or "").strip()
+        else:
+            label = str(item).strip()
+        if label:
+            labels.append(label)
+    return "；".join(labels)
+
+
+def _format_brain_evidence(structured_data: dict) -> list[str]:
+    lines = ["**脑 MRI 3D 分析**"]
+    lines.append(f"- 医生审核状态: {_map_brain_review_status(structured_data.get('status'))}")
+    spatial_info = structured_data.get("spatial_info") if isinstance(structured_data.get("spatial_info"), dict) else {}
+    location = spatial_info.get("location") if isinstance(spatial_info, dict) else None
+    if location:
+        lines.append(f"- 关键定位: {location}")
+    findings_text = _summarize_structured_findings(structured_data.get("findings"))
+    if findings_text:
+        lines.append(f"- 关键发现: {findings_text}")
+    report_text = structured_data.get("report_text")
+    if report_text:
+        lines.append(f"**空间报告:** {report_text}")
+    return lines
+
+
+def _format_evidence_sections(ev) -> list[str]:
+    sections: list[str] = []
+    structured_data = ev.structured_data if isinstance(ev.structured_data, dict) else {}
+    is_brain_mri = structured_data.get("pipeline") == "brain_nifti_v1" or structured_data.get("viewer_kind") == "brain_spatial_review"
+
+    if is_brain_mri:
+        sections.extend(_format_brain_evidence(structured_data))
+
+    if ev.ai_analysis:
+        sections.append(f"**AI 分析结果:**\n{ev.ai_analysis}")
+    if structured_data and not is_brain_mri:
+        import json as _json
+
+        sections.append(f"**结构化数据:**\n```json\n{_json.dumps(structured_data, ensure_ascii=False, indent=2)}\n```")
+    if ev.doctor_annotation:
+        sections.append(f"**医生批注:** {ev.doctor_annotation}")
+
+    return sections
+
 def _broadcast_event(event_type: str, data: dict):
     """Push an event to all connected SSE subscribers."""
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False, default=str)
@@ -335,15 +398,7 @@ async def get_case_summary(case_id: str):
             if ev.is_abnormal:
                 ev_header += " ⚠️ 异常"
             sections.append(ev_header)
-
-            if ev.ai_analysis:
-                sections.append(f"**AI 分析结果:**\n{ev.ai_analysis}")
-            if ev.structured_data:
-                # 紧凑展示 JSON，避免过长
-                import json as _json
-                sections.append(f"**结构化数据:**\n```json\n{_json.dumps(ev.structured_data, ensure_ascii=False, indent=2)}\n```")
-            if ev.doctor_annotation:
-                sections.append(f"**医生批注:** {ev.doctor_annotation}")
+            sections.extend(_format_evidence_sections(ev))
 
     # 5. 已有诊断（如有）
     if case.diagnosis:

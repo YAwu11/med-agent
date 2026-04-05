@@ -98,7 +98,9 @@ Windows-specific local helper:
 powershell -ExecutionPolicy Bypass -File ..\scripts\start\start_all_with_mcp.ps1
 ```
 
-This helper starts LangGraph, Gateway, chest MCP, brain MCP, and RAGFlow Lite together. It also bootstraps `pip` inside `backend/.venv` when needed, installs `nibabel` as the minimum brain-pipeline dependency, and attempts to install `antspyx` for full spatial localization support.
+This helper starts LangGraph, Gateway, chest MCP, brain MCP, and RAGFlow Lite together. It also bootstraps `pip` inside `backend/.venv` when needed, installs `nnunetv2` and `nibabel` as the minimum brain-pipeline dependencies, and attempts to install `antspyx` for full spatial localization support.
+
+For lab-report OCR, the helper now prints whether `backend/.venv` is in `local_ready` mode or `cloud_fallback` mode. The latter is the expected state after a plain `uv sync`; it means the optional local Paddle stack is missing and uploads will use remote `PaddleOCR-VL`. To opt into local `PPStructureV3`, run `powershell -ExecutionPolicy Bypass -File ..\..\scripts\install_local_lab_ocr.ps1` from `backend/`, or `powershell -ExecutionPolicy Bypass -File scripts/install_local_lab_ocr.ps1` from the repository root, after stopping any running backend service windows so `backend/.venv` is not file-locked by Windows.
 
 If `backend/.venv\Scripts\langgraph.exe` fails on Windows with `uv trampoline failed to canonicalize script path`, use the direct Click-entrypoint form that the helper script now uses internally:
 ```powershell
@@ -110,16 +112,18 @@ Regression tests related to Docker/provisioner behavior:
 - `tests/test_provisioner_kubeconfig.py` (kubeconfig file/directory handling)
 - `tests/test_cases_router.py` (summary-readiness projection, HTTP 409 synthesis gate, and diagnosis route uniqueness coverage)
 - `tests/test_appointment_router.py` (Pydantic v2 patient-intake patch model config regression coverage plus lab OCR evidence normalization coverage)
-- `tests/test_uploads_router.py` (direct upload handler coverage for thread-local writes, markdown sidecars, and unsafe filename normalization)
-- `tests/test_imaging_reports_router.py` (stateless analyze-cv fallback coverage when `image_url` is omitted and the case already has imaging evidence)
-- `tests/test_brain_mcp_live.py` (opt-in local smoke test for the live `localhost:8003` brain MCP path using a synthetic NIfTI volume; run with `RUN_BRAIN_MCP_LIVE=1` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; accepts mock-fallback output when weights are absent)
+- `tests/test_uploads_router.py` (direct upload handler coverage for thread-local writes, markdown sidecars, unsafe filename normalization, NIfTI-only brain MRI sequence guidance, and the route-level four-sequence upload -> brain-report -> doctor-review flow)
+- `tests/test_local_lab_ocr_runtime.py` (runtime-mode coverage for `local_ready` vs `cloud_fallback` based on optional Paddle module availability)
+- `tests/test_lab_ocr_analyzer.py` (lab-report OCR fallback coverage: if local `PPStructureV3` returns empty, analyzer must fall back to the cloud `PaddleOCR-VL` path instead of persisting an empty analysis)
+- `tests/test_imaging_reports_router.py` (stateless analyze-cv fallback coverage when `image_url` is omitted and the case already has imaging evidence, plus doctor-review merge persistence so partial edits do not drop summary/probability metadata)
+- `tests/test_brain_mcp_live.py` (opt-in local smoke test for the live `localhost:8003` brain MCP path using a synthetic 4-sequence BraTS-style case; run with `RUN_BRAIN_MCP_LIVE=1` and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; verifies that segmentation is no longer using the mock backend when weights and `nnunetv2` are present)
 - `tests/test_dependency_warnings.py` (requests import warning regression coverage for transitive dependency compatibility)
 - `tests/test_gateway_start_commands.py` (host-side gateway startup scripts must use `uv run python -m uvicorn ...` to avoid Windows console-entrypoint blocking)
 
 Boundary check (harness → app import firewall):
 - `tests/test_harness_boundary.py` — ensures `packages/harness/deerflow/` never imports from `app.*`
 
-CI runs these regression tests for every pull request via [.github/workflows/backend-unit-tests.yml](../.github/workflows/backend-unit-tests.yml).
+CI now runs the imaging regression slice via `.github/workflows/doctor-imaging-ci.yml`. That workflow also runs the frontend Vitest, Playwright, lint, typecheck, and build checks for doctor-imaging changes.
 
 ## Architecture
 

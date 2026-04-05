@@ -5,8 +5,8 @@ from app.gateway.services.analyzer_registry import AnalyzerSpec, register
 def register_all():
     """Register all available analyzers on startup."""
     from .lab_ocr import LabOCRAnalyzer
+    from .brain_image_notice import BrainImageNoticeAnalyzer
     from .xray_mcp import XrayMCPAnalyzer
-    from .brain_mcp import BrainTumorAnalyzer
     from .vlm_fallback import VLMFallbackAnalyzer
 
     register(AnalyzerSpec(
@@ -26,11 +26,11 @@ def register_all():
     ))
 
     register(AnalyzerSpec(
-        name="mcp_brain_tumor",
+        name="brain_mri_notice",
         categories=["brain_mri"],
-        handler=BrainTumorAnalyzer().analyze,
+        handler=BrainImageNoticeAnalyzer().analyze,
         min_confidence=0.6,
-        gpu_bound=True,
+        gpu_bound=False,
     ))
     
     register(AnalyzerSpec(

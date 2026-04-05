@@ -36,7 +36,12 @@ async def _run_pipeline(task_id: str, nifti_path: str, thread_id: str, original_
 
     # 使用 BrainTumorAnalyzer 调度（内部通过 MCP SSE 调用 engine_3d）
     analyzer = BrainTumorAnalyzer()
-    result = await analyzer.analyze(nifti_path, thread_id, original_filename)
+    result = await analyzer.analyze(
+        nifti_path,
+        thread_id,
+        original_filename,
+        report_id=ev_id or None,
+    )
 
     # 将结果回写到对应的 Evidence 上
     if ev_id:
@@ -45,7 +50,11 @@ async def _run_pipeline(task_id: str, nifti_path: str, thread_id: str, original_
         if case:
             # 确保 structured_data 中保持 pipeline 标识和 status
             sd = result.structured_data or {}
-            sd["status"] = "pending_doctor_review"
+            sd.setdefault("pipeline", "brain_nifti_v1")
+            sd.setdefault("modality", "brain_mri_3d")
+            sd.setdefault("viewer_kind", "brain_spatial_review")
+            sd.setdefault("report_id", ev_id)
+            sd["status"] = str(sd.get("status") or "pending_review")
 
             update_evidence_data(case.case_id, ev_id, {
                 "structured_data": sd,

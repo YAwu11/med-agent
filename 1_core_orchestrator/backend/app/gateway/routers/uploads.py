@@ -33,6 +33,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 
 # 文件类型 → Evidence 类型映射（非图像文件根据扩展名推断）
 _DOC_EXTS = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xls", ".xlsx"}
+BRAIN_MRI_REQUIRED_SEQUENCES = ("t1", "t1ce", "t2", "flair")
 
 router = APIRouter(prefix="/api/threads/{thread_id}/uploads", tags=["uploads"])
 
@@ -43,6 +44,63 @@ class UploadResponse(BaseModel):
     files: list[dict[str, str]]
     message: str
     task_ids: list[str] = []
+
+
+def _is_nifti_file(filename: str) -> bool:
+    return filename.endswith(".nii.gz") or filename.endswith(".nii")
+
+
+def _detect_brain_mri_sequence(filename: str | None) -> str | None:
+    if not filename:
+        return None
+
+    lower_name = Path(filename).name.lower()
+    if lower_name.endswith(".nii.gz"):
+        stem = lower_name[:-7]
+    else:
+        stem = Path(lower_name).stem
+
+    normalized = stem.replace("-", "_")
+    if "flair" in normalized:
+        return "flair"
+    if "t1ce" in normalized or "t1c" in normalized:
+        return "t1ce"
+    if "t2" in normalized:
+        return "t2"
+    if "t1" in normalized:
+        return "t1"
+    return None
+
+
+def _build_brain_mri_guidance(case, uploaded_files: list[dict[str, str]]) -> dict[str, object]:
+    candidate_names: set[str] = set()
+
+    for ev in getattr(case, "evidence", []):
+        if not ev.file_path:
+            continue
+        candidate_name = Path(ev.file_path).name
+        if _is_nifti_file(candidate_name):
+            candidate_names.add(candidate_name)
+
+    for file_info in uploaded_files:
+        filename = file_info.get("filename", "")
+        if _is_nifti_file(filename):
+            candidate_names.add(filename)
+
+    detected = [
+        sequence
+        for sequence in BRAIN_MRI_REQUIRED_SEQUENCES
+        if any(_detect_brain_mri_sequence(name) == sequence for name in candidate_names)
+    ]
+    missing = [sequence for sequence in BRAIN_MRI_REQUIRED_SEQUENCES if sequence not in detected]
+
+    return {
+        "upload_mode": "guided_4_sequence",
+        "required_sequences": list(BRAIN_MRI_REQUIRED_SEQUENCES),
+        "detected_sequences": detected,
+        "missing_sequences": missing,
+        "ready_for_analysis": not missing,
+    }
 
 @router.post("", response_model=UploadResponse)
 async def upload_files(
@@ -204,6 +262,8 @@ async def _auto_sync_evidence(thread_id: str, uploaded_files: list[dict], analys
         analysis = result_map.get(filename)
         
         # Merge properties from AnalysisResult if available
+        pending_new_ev_id = uuid.uuid4().hex[:12]
+
         if analysis:
             ev_type = analysis.evidence_type
             evidence_title = analysis.evidence_title
@@ -221,17 +281,20 @@ async def _auto_sync_evidence(thread_id: str, uploaded_files: list[dict], analys
                  if ocr_sidecar.exists():
                      ai_analysis_text = ocr_sidecar.read_text(encoding="utf-8")
 
-            def _detect_nifti(filename: str) -> bool:
-                return filename.endswith(".nii.gz") or filename.endswith(".nii")
-
             if file_ext in IMAGE_EXTS:
                 ev_type = "imaging"
                 evidence_title = "胸部X光片"
-            elif _detect_nifti(filename):
+            elif _is_nifti_file(filename):
                 ev_type = "imaging"
                 evidence_title = "脑部核磁共振 (MRI NIfTI)"
                 # [ADR-036] 写入占位 structured_data，使前端立刻渲染 BrainSpatialReview 的加载态
-                structured = {"pipeline": "brain_nifti_v1", "status": "processing"}
+                structured = {
+                    "pipeline": "brain_nifti_v1",
+                    "status": "processing",
+                    "modality": "brain_mri_3d",
+                    "viewer_kind": "brain_spatial_review",
+                    "report_id": pending_new_ev_id,
+                }
             elif file_ext in _DOC_EXTS:
                 ev_type = "note"
                 evidence_title = filename
@@ -255,6 +318,19 @@ async def _auto_sync_evidence(thread_id: str, uploaded_files: list[dict], analys
 
         if existing_ev:
             from app.gateway.services.case_db import update_evidence_data
+            existing_structured = existing_ev.structured_data if isinstance(existing_ev.structured_data, dict) else {}
+            if _is_nifti_file(filename):
+                brain_mri_guidance = _build_brain_mri_guidance(case, uploaded_files)
+                structured = {
+                    **existing_structured,
+                    **(structured or {}),
+                    "pipeline": "brain_nifti_v1",
+                    "status": str((structured or {}).get("status") or existing_structured.get("status") or "processing"),
+                    "modality": "brain_mri_3d",
+                    "viewer_kind": "brain_spatial_review",
+                    "report_id": str((structured or {}).get("report_id") or existing_structured.get("report_id") or existing_ev.evidence_id),
+                    **brain_mri_guidance,
+                }
             update_evidence_data(case.case_id, existing_ev.evidence_id, {
                 "title": evidence_title,
                 "ai_analysis": ai_analysis_text,
@@ -266,7 +342,18 @@ async def _auto_sync_evidence(thread_id: str, uploaded_files: list[dict], analys
         else:
             # We generate our own ev ID here or use the newly generated one from add_evidence. 
             # To be safe and deterministic, let's inject a new one.
-            new_ev_id = uuid.uuid4().hex[:12]
+            new_ev_id = pending_new_ev_id
+            if _is_nifti_file(filename):
+                brain_mri_guidance = _build_brain_mri_guidance(case, uploaded_files)
+                structured = {
+                    **(structured or {}),
+                    "pipeline": "brain_nifti_v1",
+                    "status": str((structured or {}).get("status") or "processing"),
+                    "modality": "brain_mri_3d",
+                    "viewer_kind": "brain_spatial_review",
+                    "report_id": str((structured or {}).get("report_id") or new_ev_id),
+                    **brain_mri_guidance,
+                }
             req = AddEvidenceRequest(
                 evidence_id=new_ev_id,
                 type=ev_type,

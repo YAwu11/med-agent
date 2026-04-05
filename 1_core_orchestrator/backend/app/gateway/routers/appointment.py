@@ -64,62 +64,13 @@ async def get_appointment_preview(thread_id: str) -> dict:
             "message": f"已挂号（编号: {existing.case_id[:8]}）",
         }
 
-    paths = get_paths()
-    sandbox_dir = paths.sandbox_user_data_dir(thread_id)
-
-    # Read patient info
-    patient_info: dict = {}
-    intake_file = sandbox_dir / "patient_intake.json"
-    if intake_file.exists():
-        try:
-            patient_info = json.loads(intake_file.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    # Read evidence items
-    evidence_items: list[dict] = []
-
-    # Imaging reports
-    reports_dir = sandbox_dir / "imaging-reports"
-    if reports_dir.exists():
-        for rf in sorted(reports_dir.glob("*.json")):
-            try:
-                rd = json.loads(rf.read_text(encoding="utf-8"))
-                ai = rd.get("ai_result", {})
-                findings = ai.get("findings", []) if isinstance(ai, dict) else []
-                image_path = rd.get("image_path", "")
-                fname = image_path.rsplit("/", 1)[-1] if "/" in image_path else Path(image_path).name
-                evidence_items.append({
-                    "id": rd.get("report_id", rf.stem),
-                    "type": "imaging",
-                    "title": f"影像分析: {fname}",
-                    "filename": fname,
-                    "findings_count": len(findings) if isinstance(findings, list) else 0,
-                    "is_abnormal": bool(findings),
-                })
-            except Exception as e:
-                logger.warning(f"Failed to parse report {rf}: {e}")
-
-    # Lab reports (OCR sidecars)
-    uploads_dir = paths.sandbox_uploads_dir(thread_id)
-    if uploads_dir and uploads_dir.exists():
-        for ocr_file in sorted(uploads_dir.glob("*.ocr.md")):
-            original = ocr_file.name.replace(".ocr.md", "")
-            text = ocr_file.read_text(encoding="utf-8")
-            lines = [line.strip() for line in text.split("\n") if line.strip()]
-            evidence_items.append({
-                "id": f"lab_{original}",
-                "type": "lab_report",
-                "title": f"化验单: {original}",
-                "filename": original,
-                "ocr_summary": "\n".join(lines[:6]),
-            })
+    snapshot = build_patient_record_snapshot(thread_id)
 
     return {
         "type": "appointment_preview",
         "thread_id": thread_id,
-        "patient_info": patient_info,
-        "evidence_items": evidence_items,
+        "patient_info": snapshot["patient_info"],
+        "evidence_items": snapshot["evidence_items"],
     }
 
 # ── Confirm Endpoint ───────────────────────────────────────

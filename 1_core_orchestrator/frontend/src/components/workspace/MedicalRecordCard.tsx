@@ -31,6 +31,19 @@ interface MedicalRecordEvidence {
   is_abnormal: boolean;
   findings_brief?: string;
   ocr_summary?: string;
+  findings_count?: number;
+  report_id?: string;
+  pipeline?: string;
+  viewer_kind?: string;
+  modality?: string;
+  review_status?: string;
+  slice_png_path?: string;
+  source_upload_filename?: string;
+  report_text?: string;
+  spatial_info?: {
+    location?: string;
+    clinical_warning?: string;
+  };
 }
 
 interface MedicalRecordGuidance {
@@ -159,6 +172,33 @@ function mergePreset(currentValue: FormValue | undefined, nextValue: string): st
   if (!currentText) return nextValue;
   if (currentText.includes(nextValue)) return currentText;
   return `${currentText}；${nextValue}`;
+}
+
+function isBrainEvidence(item: MedicalRecordEvidence): boolean {
+  return (
+    item.pipeline === "brain_nifti_v1" ||
+    item.viewer_kind === "brain_spatial_review" ||
+    item.modality?.startsWith("brain_mri") === true
+  );
+}
+
+function formatReviewStatus(status?: string): string | null {
+  switch (status) {
+    case "reviewed":
+      return "已医生复核";
+    case "pending_review":
+    case "pending_doctor_review":
+      return "待医生复核";
+    case "processing":
+    case "queued":
+    case "running":
+      return "处理中";
+    case "failed":
+    case "error":
+      return "处理失败";
+    default:
+      return null;
+  }
 }
 
 function FieldLabel({
@@ -901,57 +941,93 @@ export function MedicalRecordCard({
 
               <div className="grid gap-3 lg:grid-cols-2">
                 {data.evidence_items.length > 0 ? (
-                  data.evidence_items.map((item) => (
-                    <div
-                      key={item.id}
-                      className={cn(
-                        "rounded-3xl border px-4 py-3",
-                        item.status === "processing"
-                          ? "border-amber-200 bg-amber-50/80"
-                          : item.is_abnormal
-                            ? "border-rose-200 bg-rose-50/80"
-                            : "border-emerald-200 bg-emerald-50/80",
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-                          <p className="mt-1 text-xs text-slate-500">{item.filename}</p>
+                  data.evidence_items.map((item) => {
+                    const brainEvidence = isBrainEvidence(item);
+                    const reviewStatusLabel = brainEvidence
+                      ? formatReviewStatus(item.review_status)
+                      : null;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          "rounded-3xl border px-4 py-3",
+                          item.status === "processing"
+                            ? "border-amber-200 bg-amber-50/80"
+                            : item.is_abnormal
+                              ? "border-rose-200 bg-rose-50/80"
+                              : "border-emerald-200 bg-emerald-50/80",
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                            <p className="mt-1 text-xs text-slate-500">{item.filename}</p>
+                          </div>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <span
+                              className={cn(
+                                "rounded-full px-2.5 py-1 text-[11px] font-semibold",
+                                item.status === "processing"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : item.is_abnormal
+                                    ? "bg-rose-100 text-rose-700"
+                                    : "bg-emerald-100 text-emerald-700",
+                              )}
+                            >
+                              {item.status === "processing"
+                                ? "处理中"
+                                : brainEvidence
+                                  ? "脑 MRI"
+                                  : item.type === "imaging"
+                                    ? "影像分析"
+                                    : "化验摘要"}
+                            </span>
+                            {reviewStatusLabel ? (
+                              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                                {reviewStatusLabel}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
-                        <span
-                          className={cn(
-                            "rounded-full px-2.5 py-1 text-[11px] font-semibold",
-                            item.status === "processing"
-                              ? "bg-amber-100 text-amber-800"
-                              : item.is_abnormal
-                                ? "bg-rose-100 text-rose-700"
-                                : "bg-emerald-100 text-emerald-700",
-                          )}
-                        >
-                          {item.status === "processing"
-                            ? "处理中"
-                            : item.type === "imaging"
-                              ? "影像分析"
-                              : "化验摘要"}
-                        </span>
+                        {brainEvidence && item.spatial_info?.location ? (
+                          <p className="mt-3 text-sm text-slate-600">
+                            定位区域：{item.spatial_info.location}
+                          </p>
+                        ) : null}
+                        {item.findings_brief ? (
+                          <p className="mt-3 text-sm leading-6 text-slate-600">
+                            {item.findings_brief}
+                          </p>
+                        ) : null}
+                        {brainEvidence && item.findings_count ? (
+                          <p className="mt-2 text-xs text-slate-500">
+                            AI 共标记 {item.findings_count} 处关键病灶
+                          </p>
+                        ) : null}
+                        {item.ocr_summary ? (
+                          <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-600">
+                            {item.ocr_summary}
+                          </p>
+                        ) : null}
+                        {brainEvidence && item.report_text ? (
+                          <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-600">
+                            {item.report_text}
+                          </p>
+                        ) : null}
+                        {brainEvidence && item.spatial_info?.clinical_warning ? (
+                          <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                            {item.spatial_info.clinical_warning}
+                          </p>
+                        ) : null}
+                        {item.status === "processing" ? (
+                          <p className="mt-3 text-sm text-amber-700">
+                            AI 正在识别该资料，请稍候刷新查看结果。
+                          </p>
+                        ) : null}
                       </div>
-                      {item.findings_brief ? (
-                        <p className="mt-3 text-sm leading-6 text-slate-600">
-                          {item.findings_brief}
-                        </p>
-                      ) : null}
-                      {item.ocr_summary ? (
-                        <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-600">
-                          {item.ocr_summary}
-                        </p>
-                      ) : null}
-                      {item.status === "processing" ? (
-                        <p className="mt-3 text-sm text-amber-700">
-                          AI 正在识别该资料，请稍候刷新查看结果。
-                        </p>
-                      ) : null}
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm text-slate-500">
                     识别结果会在上传完成后自动汇总到这里。

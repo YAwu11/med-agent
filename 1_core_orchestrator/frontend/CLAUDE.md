@@ -17,10 +17,13 @@ DeerFlow Frontend is a Next.js 16 web interface for an AI agent system. It commu
 | `pnpm check` | Lint + type check (run before committing) |
 | `pnpm lint` | ESLint only |
 | `pnpm lint:fix` | ESLint with auto-fix |
+| `pnpm test` | Vitest run |
+| `pnpm test:e2e` | Playwright browser regression |
+| `pnpm test:watch` | Vitest watch mode |
 | `pnpm typecheck` | TypeScript type check (`tsc --noEmit`) |
 | `pnpm start` | Start production server |
 
-No test framework is configured.
+Vitest + Testing Library are configured for focused component regressions in jsdom, and Playwright covers a narrow browser-level doctor imaging harness. Current doctor-side imaging coverage lives in `src/components/doctor/__tests__/ImagingViewer.test.tsx`, `tests/e2e/doctor-imaging-review.spec.ts`, and `src/app/mock/doctor-imaging-review/page.tsx`, locking structured summary rendering plus the `{ doctor_result: ... }` save payload contract in both component and browser contexts.
 
 ## Architecture
 
@@ -78,7 +81,7 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 - **Class names**: Use `cn()` from `@/lib/utils` for conditional Tailwind classes.
 - **Path alias**: `@/*` maps to `src/*`.
 - **Components**: `ui/` and `ai-elements/` are generated from registries (Shadcn, MagicUI, React Bits, Vercel AI SDK) — don't manually edit these.
-- **Targeted validation**: for doctor-side cleanup work, run isolated ESLint commands like `pnpm exec eslint "src/components/doctor/**/*.tsx"` before relying on repo-wide lint output.
+- **Targeted validation**: for doctor-side cleanup work, run `pnpm test -- ImagingViewer`, `pnpm test:e2e -- doctor-imaging-review`, then isolated ESLint commands like `pnpm exec eslint "src/components/doctor/**/*.tsx"`, before relying on repo-wide lint output.
 
 ## Environment
 
@@ -92,6 +95,16 @@ NEXT_PUBLIC_LANGGRAPH_BASE_URL=http://localhost:2024
 Production-mode builds also require `BETTER_AUTH_SECRET` because `src/env.js` validates it when `NODE_ENV=production`.
 Use any 32+ character placeholder for local verification and a real random secret for shared environments.
 `BETTER_AUTH_URL` is optional for the build itself, but setting it avoids Better Auth base URL warnings.
+Better Auth may log the phrase `BETTER_AUTH_BASE_URL`, but this repo currently resolves the URL from `BETTER_AUTH_URL` unless `baseURL` is set in code.
 Prefer real env values locally; reserve `SKIP_ENV_VALIDATION=1` for Docker or CI escape hatches.
+
+Repo-level CI for this frontend slice lives in `.github/workflows/doctor-imaging-ci.yml`. The frontend job runs `pnpm test`, `pnpm lint`, `pnpm typecheck`, `pnpm build`, and `pnpm test:e2e -- doctor-imaging-review`.
+
+For local production-style startup validation, use this exact sequence:
+
+1. Copy `.env.example` to `.env` and set `BETTER_AUTH_SECRET`.
+2. Optionally set `BETTER_AUTH_URL=http://localhost:3000` to silence base URL warnings.
+3. Run `pnpm lint`, `pnpm typecheck`, `pnpm build`, then `pnpm start`.
+4. Open `http://localhost:3000` and verify the app boots without env validation errors.
 
 Requires Node.js 22+ and pnpm 10.26.2+.

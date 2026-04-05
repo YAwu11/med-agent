@@ -21,7 +21,13 @@ from app.gateway.services.mcp_brain_client import analyze_brain_tumor_nifti_mcp
 class BrainTumorAnalyzer:
     """脑部 3D 取向肿瘤分析器"""
 
-    async def analyze(self, image_path: str, thread_id: str, original_filename: str) -> AnalysisResult:
+    async def analyze(
+        self,
+        image_path: str,
+        thread_id: str,
+        original_filename: str,
+        report_id: str | None = None,
+    ) -> AnalysisResult:
         logger.info(f"[BrainMCP] 接收到脑部 MRI 任务: {original_filename}")
 
         # 1. 向远端微服务发送推理请求
@@ -48,11 +54,11 @@ class BrainTumorAnalyzer:
         is_mock_fallback = result_dict.get("is_mock_fallback", False)
 
         # 3. 将分析结果写入沙盒，供工作站展现
-        report_id = str(uuid.uuid4())[:8]
+        resolved_report_id = report_id or str(uuid.uuid4())[:8]
         paths = get_paths()
         reports_dir = paths.sandbox_user_data_dir(thread_id) / "imaging-reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
-        report_file = reports_dir / f"{report_id}.json"
+        report_file = reports_dir / f"{resolved_report_id}.json"
 
         # VLM 判定的结果数据
         ai_result = {
@@ -62,11 +68,13 @@ class BrainTumorAnalyzer:
         }
 
         report_payload = {
-            "report_id": report_id,
+            "report_id": resolved_report_id,
             "thread_id": thread_id,
             "status": "pending_review",
             "image_path": slice_png_path if slice_png_path else image_path,
+            "source_upload_filename": original_filename,
             "modality": "brain_mri_3d",
+            "viewer_kind": "brain_spatial_review",
             "ai_result": ai_result,
             "doctor_result": None,
         }
@@ -79,11 +87,12 @@ class BrainTumorAnalyzer:
             "pipeline": "brain_nifti_v1",
             "mcp_status": "completed",
             "modality": "brain_mri_3d",
-            "status": "pending_doctor_review",
+            "viewer_kind": "brain_spatial_review",
+            "status": "pending_review",
             "spatial_info": spatial_info,
             "slice_png_path": slice_png_path,
             "is_mock_fallback": is_mock_fallback,
-            "report_id": report_id
+            "report_id": resolved_report_id,
         }
 
         # 4. 返回标准 AnalysisResult 供大模型整合

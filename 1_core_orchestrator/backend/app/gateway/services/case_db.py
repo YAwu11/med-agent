@@ -402,13 +402,16 @@ def update_case_evidence_from_report(thread_id: str, report_id: str, doctor_resu
         
     updated = False
     for item in target_case.evidence:
-        if item.evidence_id == report_id:
-            # Reconstruct the structured data from the doctor result
-            if item.structured_data is None:
+        structured = item.structured_data if isinstance(item.structured_data, dict) else {}
+        linked_report_id = structured.get("report_id")
+        if item.evidence_id == report_id or linked_report_id == report_id:
+            if item.structured_data is None or not isinstance(item.structured_data, dict):
                 item.structured_data = {}
-            # Update specific keys from doctor_result
+            item.structured_data.setdefault("report_id", report_id)
             item.structured_data.update(doctor_result)
+            item.structured_data["status"] = str(doctor_result.get("status") or "reviewed")
             updated = True
+            break
             
     if updated:
         target_case.updated_at = datetime.now(timezone.utc)
@@ -516,17 +519,28 @@ def sync_report_from_file(thread_id: str, file_path: Path) -> dict | None:
         
         with _lock:
             conn = _get_conn()
-            # Insert if not exists
+            existing = conn.execute(
+                "SELECT created_at FROM reports WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()
+            created_at = existing[0] if existing else now_str
             conn.execute(
                 """
-                INSERT OR IGNORE INTO reports 
+                INSERT INTO reports 
                 (report_id, patient_thread_id, image_path, ai_result, doctor_result, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_id) DO UPDATE SET
+                    patient_thread_id = excluded.patient_thread_id,
+                    image_path = excluded.image_path,
+                    ai_result = excluded.ai_result,
+                    doctor_result = excluded.doctor_result,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
                 """,
-                (report_id, thread_id, image_path, ai_result_str, doc_result_str, status, now_str, now_str)
+                (report_id, thread_id, image_path, ai_result_str, doc_result_str, status, created_at, now_str)
             )
             conn.commit()
-            
+
             row = conn.execute("SELECT ai_result, doctor_result, status FROM reports WHERE report_id = ?", (report_id,)).fetchone()
             
         return {
@@ -592,6 +606,12 @@ def update_report(report_id: str, doctor_result: dict, doctor_id: str = "unknown
     existing_report = get_report_by_id(report_id)
     if not existing_report:
         return None
+
+    merged_doctor_result = {
+        **(existing_report.get("ai_result") if isinstance(existing_report.get("ai_result"), dict) else {}),
+        **(existing_report.get("doctor_result") if isinstance(existing_report.get("doctor_result"), dict) else {}),
+        **doctor_result,
+    }
         
     # Capture old value for audit snapshot
     old_value = existing_report["doctor_result"] if existing_report.get("doctor_result") else existing_report["ai_result"]
@@ -599,7 +619,7 @@ def update_report(report_id: str, doctor_result: dict, doctor_id: str = "unknown
     
     now_str = datetime.now(timezone.utc).isoformat()
     old_value_str = json.dumps(old_value, ensure_ascii=False)
-    new_value_str = json.dumps(doctor_result, ensure_ascii=False)
+    new_value_str = json.dumps(merged_doctor_result, ensure_ascii=False)
     
     with _lock:
         conn = _get_conn()

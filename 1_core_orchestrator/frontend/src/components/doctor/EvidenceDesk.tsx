@@ -73,11 +73,89 @@ interface ImagingStructuredData extends Record<string, unknown> {
   spatial_info?: unknown;
   slice_png_path?: string;
   status?: string;
+  report_id?: string;
+  modality?: string;
+  viewer_kind?: string;
+  required_sequences?: string[];
+  detected_sequences?: string[];
+  missing_sequences?: string[];
+  ready_for_analysis?: boolean;
+  upload_mode?: string;
 }
 
 interface LabStructuredData extends Record<string, unknown> {
   ocr_raw_numbers?: string[];
   value_warnings?: LabValueWarning[];
+}
+
+const BRAIN_MRI_REQUIRED_SEQUENCES = ["t1", "t1ce", "t2", "flair"] as const;
+type BrainMriSequence = (typeof BRAIN_MRI_REQUIRED_SEQUENCES)[number];
+
+function isNiftiFilename(filename?: string | null): boolean {
+  return Boolean(filename && /\.nii(\.gz)?$/i.test(filename));
+}
+
+function detectBrainMriSequence(filename?: string | null): BrainMriSequence | null {
+  if (!filename) {
+    return null;
+  }
+
+  const lowerName = filename.toLowerCase();
+  const normalized = lowerName.replace(/\.nii(\.gz)?$/i, "").replace(/-/g, "_");
+  if (normalized.includes("flair")) {
+    return "flair";
+  }
+  if (normalized.includes("t1ce") || normalized.includes("t1c")) {
+    return "t1ce";
+  }
+  if (normalized.includes("t2")) {
+    return "t2";
+  }
+  if (normalized.includes("t1")) {
+    return "t1";
+  }
+  return null;
+}
+
+function deriveBrainMriUploadStatus(evidenceItems: EvidenceItem[]) {
+  const detectedSequences = new Set<BrainMriSequence>();
+  let readyForAnalysis: boolean | null = null;
+
+  for (const item of evidenceItems) {
+    const structured = item.structured_data as ImagingStructuredData | undefined;
+    const candidateName = item.file_path ?? item.title;
+    const sequence = isNiftiFilename(candidateName) ? detectBrainMriSequence(candidateName) : null;
+
+    if (sequence) {
+      detectedSequences.add(sequence);
+    }
+
+    if (structured?.pipeline !== "brain_nifti_v1") {
+      continue;
+    }
+
+    if (Array.isArray(structured.detected_sequences)) {
+      for (const value of structured.detected_sequences) {
+        if (BRAIN_MRI_REQUIRED_SEQUENCES.includes(value as BrainMriSequence)) {
+          detectedSequences.add(value as BrainMriSequence);
+        }
+      }
+    }
+
+    if (typeof structured.ready_for_analysis === "boolean") {
+      readyForAnalysis = structured.ready_for_analysis;
+    }
+  }
+
+  const orderedDetected = BRAIN_MRI_REQUIRED_SEQUENCES.filter((sequence) => detectedSequences.has(sequence));
+  const missingSequences = BRAIN_MRI_REQUIRED_SEQUENCES.filter((sequence) => !detectedSequences.has(sequence));
+
+  return {
+    detectedSequences: orderedDetected,
+    missingSequences,
+    readyForAnalysis: readyForAnalysis ?? missingSequences.length === 0,
+    hasAnyBrainSeries: orderedDetected.length > 0,
+  };
 }
 
 function parseIntegerInput(value: string): number | "" {
@@ -162,6 +240,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
 
   // Derive display values from API data or mock defaults
   const evidenceItems = caseData?.evidence ?? [];
+  const brainMriUploadStatus = deriveBrainMriUploadStatus(evidenceItems);
 
   // Create dynamic ALL_TABS from evidence Items
   const ALL_TABS: EvidenceDeskTab[] = [
@@ -265,12 +344,34 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   };
 
   const sidebarFileInputRef = useRef<HTMLInputElement | null>(null);
+  const brainMriFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleSidebarUpload = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {
       void uploadFiles(e.target.files);
     }
     // refresh input so same file can be uploaded again if needed
+    e.target.value = "";
+  };
+
+  const handleBrainMriUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files ?? []);
+    const niftiFiles = selectedFiles.filter((file) => isNiftiFilename(file.name));
+
+    if (selectedFiles.length > 0 && niftiFiles.length === 0) {
+      toast.warning("脑 MRI 专用入口仅支持 .nii 或 .nii.gz 文件");
+      e.target.value = "";
+      return;
+    }
+
+    if (niftiFiles.length !== selectedFiles.length) {
+      toast.warning("已忽略非 NIfTI 文件，仅上传 .nii / .nii.gz");
+    }
+
+    if (niftiFiles.length > 0) {
+      void uploadFiles(niftiFiles);
+    }
+
     e.target.value = "";
   };
 
@@ -471,7 +572,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               <Plus className="h-12 w-12 text-blue-600" />
             </div>
             <h3 className="text-2xl font-bold text-slate-800 mb-3 tracking-tight">松开鼠标上传作为证据</h3>
-            <p className="text-slate-500 font-medium">支持拖入图片、PDF及电子病历文件</p>
+            <p className="text-slate-500 font-medium">支持拖入图片、PDF、电子病历和 .nii/.nii.gz 影像序列</p>
           </div>
         </div>
       )}
@@ -512,6 +613,51 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
 
         {/* File Upload Contextual Action */}
         <div className="px-3 py-4 border-t border-slate-200/60 bg-white/50 backdrop-blur mt-auto">
+          <div className="mb-3 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-3 shadow-sm">
+            <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-blue-700">
+              <Sparkles className="h-3.5 w-3.5" />
+              脑 MRI 四序列引导
+            </div>
+            <p className="mt-2 text-[12px] leading-relaxed text-slate-600">
+              建议按 t1 / t1ce(t1c) / t2 / flair 命名，可分批上传；集齐后系统会进入 3D 分析链路。
+            </p>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              {BRAIN_MRI_REQUIRED_SEQUENCES.map((sequence) => {
+                const detected = brainMriUploadStatus.detectedSequences.includes(sequence);
+                return (
+                  <span
+                    key={sequence}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase",
+                      detected
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-slate-200 bg-white text-slate-500",
+                    )}
+                  >
+                    {sequence}
+                  </span>
+                );
+              })}
+            </div>
+
+            <div className="mt-3 flex items-start gap-2 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-600">
+              <ShieldCheck className={cn("mt-0.5 h-4 w-4 shrink-0", brainMriUploadStatus.readyForAnalysis ? "text-emerald-500" : "text-blue-500")} />
+              <div>
+                <p className="font-medium text-slate-700">
+                  {brainMriUploadStatus.readyForAnalysis
+                    ? "四序列已集齐，可以触发 3D 脑肿瘤分析。"
+                    : brainMriUploadStatus.hasAnyBrainSeries
+                      ? `当前仍缺少 ${brainMriUploadStatus.missingSequences.join(" / ")}`
+                      : "当前病例尚未收集到脑 MRI 序列。"}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  已识别：{brainMriUploadStatus.detectedSequences.length > 0 ? brainMriUploadStatus.detectedSequences.join(" / ") : "暂无"}
+                </p>
+              </div>
+            </div>
+          </div>
+
           <input
             type="file"
             id="sidebarFileSelect"
@@ -520,6 +666,16 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
             ref={sidebarFileInputRef}
             onChange={handleSidebarUpload}
           />
+          <input
+            type="file"
+            id="brainMriFileSelect"
+            className="hidden"
+            multiple
+            accept=".nii,.nii.gz"
+            ref={brainMriFileInputRef}
+            onChange={handleBrainMriUpload}
+          />
+          <div className="space-y-2">
           <Button 
             variant="outline" 
             className="w-full justify-center gap-2 bg-white backdrop-blur border-blue-200 text-blue-600 hover:bg-blue-50 transition-all shadow-sm rounded-xl py-6"
@@ -531,6 +687,17 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
             </span>
             <span>{isUploadingEvidence ? "上传中..." : "补充医疗附件"}</span>
           </Button>
+          <Button
+            className="w-full justify-center gap-2 rounded-xl bg-slate-900 py-6 text-white shadow-sm transition-all hover:bg-slate-800"
+            onClick={() => brainMriFileInputRef.current?.click()}
+            disabled={isUploadingEvidence}
+          >
+            <span className="inline-flex h-4 w-4 items-center justify-center">
+              {isUploadingEvidence ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+            </span>
+            <span>{isUploadingEvidence ? "上传中..." : "上传脑 MRI 四序列"}</span>
+          </Button>
+          </div>
         </div>
       </div>
 
@@ -739,9 +906,37 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                     正在执行 nnU-Net 3D 分割 → 空间定位 → 2D 渲染切片...<br/>
                     预计耗时 30-120 秒，请稍候。页面将自动刷新。
                   </p>
+                  <div className="mt-5 w-full max-w-xl rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+                    <div className="flex flex-wrap gap-2">
+                      {BRAIN_MRI_REQUIRED_SEQUENCES.map((sequence) => {
+                        const detected = Array.isArray(imagingStructuredData?.detected_sequences)
+                          ? imagingStructuredData.detected_sequences.includes(sequence)
+                          : false;
+                        return (
+                          <span
+                            key={sequence}
+                            className={cn(
+                              "rounded-full border px-3 py-1 text-[11px] font-semibold uppercase",
+                              detected
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-slate-200 bg-slate-50 text-slate-500",
+                            )}
+                          >
+                            {sequence}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-3 text-sm text-slate-600">
+                      {Array.isArray(imagingStructuredData?.missing_sequences) && imagingStructuredData.missing_sequences.length > 0
+                        ? `当前仍缺少序列：${imagingStructuredData.missing_sequences.join(" / ")}`
+                        : "四序列已识别完成，正在等待模型生成空间结果。"}
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <BrainSpatialReview 
+                  key={activeEvidenceItem.evidence_id}
                   spatialInfo={(imagingStructuredData?.spatial_info ?? {}) as SpatialInfo}
                   slicePngPath={imagingStructuredData?.slice_png_path}
                   evidenceId={activeEvidenceItem.evidence_id}
@@ -752,7 +947,8 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               )
             ) : (
               <ImagingViewer 
-                 reportId={activeEvidenceItem.evidence_id} 
+                 key={String(imagingStructuredData?.report_id ?? activeEvidenceItem.evidence_id)}
+                 reportId={String(imagingStructuredData?.report_id ?? activeEvidenceItem.evidence_id)} 
                  threadId={caseData?.patient_thread_id}
                  imagePath={activeEvidenceItem.file_path ?? undefined} 
                   initialStructuredData={activeEvidenceItem.structured_data as Partial<McpAnalysisResult> | undefined} 
