@@ -1,6 +1,5 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
 import {
   Bot,
   Brain,
@@ -26,11 +25,11 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
+import React, { useState, useCallback, useEffect } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -38,9 +37,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { Textarea } from "@/components/ui/textarea";
 import { getBackendBaseURL } from "@/core/config";
+import { cn } from "@/lib/utils";
 
 // ── Types ──────────────────────────────────────────────────
 interface AIModelOption {
@@ -345,7 +346,7 @@ export default function DoctorSettingsPage() {
         if (s.annotation_template) setSelectedTemplate(s.annotation_template);
         if (s.annotation_template_text) setCustomTemplate(s.annotation_template_text);
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }, []);
 
   const addQuickPhrase = () => {
@@ -412,7 +413,7 @@ export default function DoctorSettingsPage() {
         </div>
 
         {/* Tabs Navigation */}
-        <Tabs defaultValue="ai" className="space-y-6" onValueChange={() => {}}>
+        <Tabs defaultValue="ai" className="space-y-6">
           <TabsList className="w-full bg-white border border-slate-200 rounded-2xl p-1 h-auto shadow-sm">
             <TabsTrigger value="ai" className="flex-1 rounded-xl py-2.5 text-sm data-[state=active]:bg-blue-50 data-[state=active]:text-blue-700 data-[state=active]:shadow-none">
               <Bot className="h-4 w-4 mr-1.5" />

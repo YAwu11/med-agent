@@ -1,27 +1,26 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import Link from "next/link";
 import {
   Search,
-  Clock,
   CheckCircle2,
   User,
   FileText,
   ImageIcon,
   Activity,
   ArrowRight,
-  Filter,
   ChevronDown,
   ChevronUp,
   Inbox,
   AlertCircle,
 } from "lucide-react";
+import Link from "next/link";
+import React, { useEffect, useState } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import { getBackendBaseURL } from "@/core/config";
+import { cn } from "@/lib/utils";
 
 // ── Types ──────────────────────────────────────────────────
 interface PatientInfo {
@@ -76,7 +75,6 @@ export default function DoctorHistoryPage() {
   const [cases, setCases] = useState<HistoryCaseItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [isLive, setIsLive] = useState(false);
 
   // Load diagnosed + closed cases from API
   useEffect(() => {
@@ -100,21 +98,20 @@ export default function DoctorHistoryPage() {
           }
         }
         setCases(allCases);
-        setIsLive(true);
       } catch {
         console.info("[History] API unavailable");
       }
     };
-    load();
+    void load();
   }, []);
 
   const filteredCases = cases.filter(c => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
-      c.patient_info.name?.toLowerCase().includes(q) ||
-      c.patient_info.chief_complaint?.toLowerCase().includes(q) ||
-      c.diagnosis?.primary_diagnosis.toLowerCase().includes(q) ||
+      (c.patient_info.name?.toLowerCase().includes(q) ?? false) ||
+      (c.patient_info.chief_complaint?.toLowerCase().includes(q) ?? false) ||
+      (c.diagnosis?.primary_diagnosis.toLowerCase().includes(q) ?? false) ||
       c.case_id.includes(q)
     );
   });
@@ -173,14 +170,14 @@ export default function DoctorHistoryPage() {
                     {/* Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3 mb-1">
-                        <span className="text-base font-bold text-slate-800">{c.patient_info.name || "未登记"}</span>
+                        <span className="text-base font-bold text-slate-800">{c.patient_info.name ?? "未登记"}</span>
                         <span className="text-xs text-slate-400">{c.patient_info.age}岁 · {c.patient_info.sex}</span>
                         <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-[10px]">
                           <CheckCircle2 className="h-3 w-3 mr-0.5" />
                           {c.status === "closed" ? "已归档" : "已诊断"}
                         </Badge>
                       </div>
-                      <p className="text-sm text-slate-600 truncate">{c.patient_info.chief_complaint}</p>
+                      <p className="text-sm text-slate-600 truncate">{c.patient_info.chief_complaint ?? "未填写主诉"}</p>
                     </div>
 
                     {/* Diagnosis tag */}
@@ -206,7 +203,7 @@ export default function DoctorHistoryPage() {
                           <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">证据材料 ({c.evidence.length})</h4>
                           <div className="space-y-2">
                             {c.evidence.map((ev, idx) => {
-                              const EvIcon = evidenceIcons[ev.type] || FileText;
+                              const EvIcon = evidenceIcons[ev.type] ?? FileText;
                               return (
                                 <div key={idx} className={cn(
                                   "flex items-start gap-3 p-3 rounded-xl border",

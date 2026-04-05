@@ -1,9 +1,10 @@
-import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { ShieldAlert, Inbox, BarChart3, History, Settings, BookOpen } from "lucide-react";
 import Link from "next/link";
 import React from "react";
 import { Toaster } from "sonner";
+
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 
 const navItems = [
   { href: "/doctor/queue", label: "候诊队列", icon: Inbox },

@@ -8,10 +8,11 @@
 """
 
 import asyncio
+
 from loguru import logger
-from app.gateway.services.analyzer_registry import AnalysisResult
-from app.gateway.services.task_store import create_task, update_task_status
+
 from app.gateway.services.analyzers.brain_mcp import BrainTumorAnalyzer
+from app.gateway.services.task_store import update_task_status
 
 
 def process_nifti_pipeline_async(task_id: str, nifti_path: str, thread_id: str, original_filename: str, ev_id: str):

@@ -1,8 +1,8 @@
 "use client";
 
+import type Konva from "konva";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Stage, Layer, Rect, Image as KonvaImage, Line, Text, Group, Transformer } from "react-konva";
-import type Konva from "konva";
 
 // ── Types ──────────────────────────────────────────────────────
 export interface Finding {
@@ -229,7 +229,7 @@ function SelectablePolygon({
   onSelect: () => void;
   onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => void;
 }) {
-  const points = finding.polygon || [];
+  const points = finding.polygon ?? [];
   if (points.length < 6) return null; // 至少 3 个顶点
 
   // 计算多边形的外接矩形中心，用于放置标签

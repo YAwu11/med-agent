@@ -11,14 +11,12 @@
 import json
 from pathlib import Path
 
+from fastapi import APIRouter
 from loguru import logger
-
-from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config.paths import get_paths
 from deerflow.patient_record_context import build_patient_record_snapshot
-
 
 router = APIRouter(prefix="/api/threads/{thread_id}", tags=["appointment"])
 
@@ -108,7 +106,7 @@ async def get_appointment_preview(thread_id: str) -> dict:
         for ocr_file in sorted(uploads_dir.glob("*.ocr.md")):
             original = ocr_file.name.replace(".ocr.md", "")
             text = ocr_file.read_text(encoding="utf-8")
-            lines = [l.strip() for l in text.split("\n") if l.strip()]
+            lines = [line.strip() for line in text.split("\n") if line.strip()]
             evidence_items.append({
                 "id": f"lab_{original}",
                 "type": "lab_report",

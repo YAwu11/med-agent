@@ -1,7 +1,5 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
-import Link from "next/link";
 import {
   CheckCircle2,
   AlertCircle,
@@ -12,8 +10,11 @@ import {
   Activity,
   Loader2,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import Link from "next/link";
+import React, { useState, useCallback } from "react";
+
 import { getBackendBaseURL } from "@/core/config";
+import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ const priorityConfig: Record<string, { label: string; color: string; dot: string
 export function AppointmentPreview({ data }: AppointmentPreviewProps) {
   // Editable patient info
   const [patientInfo, setPatientInfo] = useState<Record<string, string | number | null>>(
-    data.patient_info || {}
+    data.patient_info ?? {}
   );
 
   // Evidence selection (all selected by default)
@@ -116,8 +117,8 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result: ConfirmedData = await res.json();
       setConfirmed(result);
-    } catch (e: any) {
-      setError(e.message || "提交失败");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "提交失败");
     } finally {
       setIsSubmitting(false);
     }
@@ -283,7 +284,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
       )}
 
       {/* Department & Reason */}
-      {(data.suggested_department || data.reason) && (
+      {(data.suggested_department ?? data.reason) && (
         <div className="px-5 py-2.5 border-b border-blue-100 text-xs text-slate-600">
           {data.suggested_department && (
             <p>

@@ -98,6 +98,8 @@ Regression tests related to Docker/provisioner behavior:
 - `tests/test_provisioner_kubeconfig.py` (kubeconfig file/directory handling)
 - `tests/test_cases_router.py` (summary-readiness projection, HTTP 409 synthesis gate, and diagnosis route uniqueness coverage)
 - `tests/test_appointment_router.py` (Pydantic v2 patient-intake patch model config regression coverage plus lab OCR evidence normalization coverage)
+- `tests/test_uploads_router.py` (direct upload handler coverage for thread-local writes, markdown sidecars, and unsafe filename normalization)
+- `tests/test_imaging_reports_router.py` (stateless analyze-cv fallback coverage when `image_url` is omitted and the case already has imaging evidence)
 - `tests/test_dependency_warnings.py` (requests import warning regression coverage for transitive dependency compatibility)
 - `tests/test_gateway_start_commands.py` (host-side gateway startup scripts must use `uv run python -m uvicorn ...` to avoid Windows console-entrypoint blocking)
 

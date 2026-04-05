@@ -8,16 +8,14 @@
 - 收到空间结构化数据和报告后，组装成 AnalysisResult。
 """
 
-import os
 import json
 import uuid
-import asyncio
-from loguru import logger
-from pathlib import Path
 
+from loguru import logger
+
+from app.core.config.paths import get_paths
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.mcp_brain_client import analyze_brain_tumor_nifti_mcp
-from app.core.config.paths import get_paths
 
 
 class BrainTumorAnalyzer:

@@ -2,13 +2,14 @@
 
 import asyncio
 import json
-from loguru import logger
 import uuid
 from pathlib import Path
 
+from loguru import logger
+
+from app.core.config.paths import get_paths
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.vision_gateway import enhance_medical_imaging
-from app.core.config.paths import get_paths
 
 
 async def _call_mcp_analyze(image_path: str, thread_id: str, original_filename: str) -> dict | None:

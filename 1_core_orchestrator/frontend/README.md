@@ -26,6 +26,10 @@ cp .env.example .env
 # Edit .env with your configuration
 ```
 
+For local production-style verification, keep `BETTER_AUTH_SECRET` set in `.env`.
+`src/env.js` validates this variable when `NODE_ENV=production`, so `pnpm build`
+will fail if it is missing.
+
 ### Development
 
 ```bash
@@ -51,9 +55,15 @@ pnpm build
 pnpm start
 ```
 
+Minimal local build notes:
+
+- `BETTER_AUTH_SECRET` is required for `pnpm build`; use any 32+ character placeholder locally and a real random secret in shared or production environments.
+- `BETTER_AUTH_URL` is optional for the build itself, but setting it avoids Better Auth base URL warnings during local production builds.
+- `SKIP_ENV_VALIDATION=1` remains available for Docker or CI escape hatches, but local verification should prefer real env values.
+
 ## Site Map
 
-```
+```text
 ├── /                    # Landing page
 ├── /chats               # Chat list
 ├── /chats/new           # New chat page
@@ -71,11 +81,17 @@ Key environment variables (see `.env.example` for full list):
 NEXT_PUBLIC_BACKEND_BASE_URL="http://localhost:8001"
 # LangGraph API URLs (optional, uses nginx proxy by default)
 NEXT_PUBLIC_LANGGRAPH_BASE_URL="http://localhost:2024"
+
+# Required for production-mode builds
+BETTER_AUTH_SECRET="change-me-32-characters-minimum-secret"
+
+# Optional, removes Better Auth base URL warning during local production builds
+# BETTER_AUTH_URL="http://localhost:3000"
 ```
 
 ## Project Structure
 
-```
+```text
 src/
 ├── app/                    # Next.js App Router pages
 │   ├── api/                # API routes
@@ -110,7 +126,7 @@ src/
 ## Scripts
 
 | Command | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `pnpm dev` | Start development server with Turbopack |
 | `pnpm build` | Build for production |
 | `pnpm start` | Start production server |

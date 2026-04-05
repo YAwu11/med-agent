@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import { ChevronLeft, ChevronRight, MessageSquare } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+
 import { DoctorChatSidebar } from "@/components/doctor/DoctorChatSidebar";
 import { EvidenceDesk } from "@/components/doctor/EvidenceDesk";
-import { MessageSquare, ChevronLeft, ChevronRight } from "lucide-react";
 
 // ── 侧栏宽度约束 (px) ──────────────────────────────────
 const MIN_WIDTH = 280;       // 最窄可用宽度

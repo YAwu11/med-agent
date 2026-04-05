@@ -130,6 +130,8 @@ FastAPI application providing REST endpoints for frontend integration:
 
 Route-level regression coverage also includes `tests/test_cases_router.py`, which verifies `/api/cases/{case_id}/summary-readiness`, the HTTP 409 synthesis gate on `/api/cases/{case_id}/summary`, and that the diagnosis PUT route is only registered once.
 
+Upload and imaging review regression coverage also includes `tests/test_uploads_router.py` and `tests/test_imaging_reports_router.py`, which verify direct upload handler behavior (thread-local writes, markdown sidecars, unsafe filename normalization) and that stateless `/api/threads/{id}/imaging-reports/analyze-cv` can fall back to the existing case imaging evidence when the frontend omits `image_url`.
+
 Pydantic migration coverage also includes `tests/test_appointment_router.py`, which verifies the patient-intake patch model keeps `extra="allow"` behavior without emitting the Pydantic v1 class-config deprecation warning, and that confirmed OCR lab evidence is normalized to the case-domain `lab` / `patient_upload` vocabulary before persistence.
 
 Dependency hygiene coverage also includes `tests/test_dependency_warnings.py`, which verifies importing `requests` does not emit `RequestsDependencyWarning` from an incompatible transitive `chardet` version.

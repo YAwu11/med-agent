@@ -18,8 +18,8 @@ from typing import Any
 from langchain.tools import ToolRuntime, tool
 from langgraph.typing import ContextT
 
-from app.core.thread_state import ThreadState
 from app.core.config.paths import get_paths
+from app.core.thread_state import ThreadState
 
 logger = logging.getLogger(__name__)
 

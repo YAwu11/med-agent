@@ -1,7 +1,5 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   Clock,
   AlertCircle,
@@ -21,13 +19,17 @@ import {
   Paperclip,
   Trash2,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
-import { toast } from "sonner";
+import { getBackendBaseURL } from "@/core/config";
+import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────
 interface PatientInfo {
@@ -63,8 +65,6 @@ interface CaseCounts {
   diagnosed: number;
   closed: number;
 }
-
-import { getBackendBaseURL } from "@/core/config";
 
 const EMPTY_COUNTS: CaseCounts = { total: 0, pending: 0, in_review: 0, diagnosed: 0, closed: 0 };
 
@@ -133,7 +133,7 @@ export default function DoctorQueuePage() {
       setIsLive(true);
       // Auto-select first if nothing selected
       if (data.cases.length > 0) {
-        setSelectedCase((prev) => prev || data.cases[0] as CaseItem);
+        setSelectedCase((prev) => prev ?? (data.cases[0] as CaseItem));
       }
     } catch {
       console.info("[Queue] API unavailable");
@@ -148,8 +148,8 @@ export default function DoctorQueuePage() {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return (
-        c.patient_info.name?.toLowerCase().includes(q) ||
-        c.patient_info.chief_complaint?.toLowerCase().includes(q) ||
+        (c.patient_info.name?.toLowerCase().includes(q) ?? false) ||
+        (c.patient_info.chief_complaint?.toLowerCase().includes(q) ?? false) ||
         c.case_id.includes(q)
       );
     }
@@ -158,7 +158,7 @@ export default function DoctorQueuePage() {
 
   // Load cases on mount + SSE subscription for real-time updates
   useEffect(() => {
-    loadCases();
+    void loadCases();
 
     // SSE subscription (best-effort, non-blocking)
     let cleanup: (() => void) | undefined;
@@ -167,14 +167,12 @@ export default function DoctorQueuePage() {
         (event) => {
           // Refresh the case list on any relevant event
           if (["new_case", "status_change", "new_evidence", "diagnosed"].includes(event.type)) {
-            loadCases();
+            void loadCases();
           }
         },
-        () => {
-          // SSE connection error — ignore, will retry via polling
-        },
+        () => undefined,
       );
-    }).catch(() => { /* API module not available */ });
+    }).catch(() => undefined);
 
     return () => cleanup?.();
   }, []);
@@ -211,13 +209,13 @@ export default function DoctorQueuePage() {
         formData.append("files", file);
       }
       // Use the case's thread_id (patient_thread_id) for the uploads API
-      const threadId = selectedCase.patient_thread_id || selectedCase.case_id;
+      const threadId = selectedCase.patient_thread_id ?? selectedCase.case_id;
       const res = await fetch(
         `${getBackendBaseURL()}/api/threads/${threadId}/uploads`,
         { method: "POST", body: formData }
       );
       if (res.ok) {
-        loadCases(); // Refresh to pick up new evidence
+        void loadCases(); // Refresh to pick up new evidence
       }
     } catch (err) {
       console.error("[DoctorUpload] Failed:", err);
@@ -240,7 +238,7 @@ export default function DoctorQueuePage() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files?.length) {
-      uploadFiles(e.dataTransfer.files);
+      void uploadFiles(e.dataTransfer.files);
     }
   };
 
@@ -427,9 +425,9 @@ export default function DoctorQueuePage() {
                     </div>
 
                     <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-sm font-bold text-slate-900">{c.patient_info.name || "未登记"}</span>
+                      <span className="text-sm font-bold text-slate-900">{c.patient_info.name ?? "未登记"}</span>
                       <span className="text-[11px] text-slate-400">·</span>
-                      <span className="text-xs text-slate-500">{c.patient_info.chief_complaint || "主诉未填写"}</span>
+                      <span className="text-xs text-slate-500">{c.patient_info.chief_complaint ?? "主诉未填写"}</span>
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -529,7 +527,7 @@ export default function DoctorQueuePage() {
                   <div>
                     <div className="text-xs text-slate-500 mb-0.5">姓名</div>
                     <div className="text-lg font-bold text-slate-800">
-                      {selectedCase.patient_info.name || "未登记"}
+                      {selectedCase.patient_info.name ?? "未登记"}
                     </div>
                   </div>
                   <div className="border-l border-slate-200 pl-6">
@@ -541,7 +539,7 @@ export default function DoctorQueuePage() {
                   <div className="border-l border-slate-200 pl-6">
                     <div className="text-xs text-slate-500 mb-0.5">主诉</div>
                     <div className="text-sm font-semibold text-slate-700 max-w-md">
-                      {selectedCase.patient_info.chief_complaint || "未填写"}
+                      {selectedCase.patient_info.chief_complaint ?? "未填写"}
                     </div>
                   </div>
                 </div>
@@ -555,7 +553,7 @@ export default function DoctorQueuePage() {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {selectedCase.evidence.map((ev, idx) => {
-                  const EvIcon = evidenceIcons[ev.type] || FileText;
+                  const EvIcon = evidenceIcons[ev.type] ?? FileText;
                   return (
                     <div
                       key={idx}

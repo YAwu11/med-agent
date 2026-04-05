@@ -11,8 +11,8 @@ DeerFlow Frontend is a Next.js 16 web interface for an AI agent system. It commu
 ## Commands
 
 | Command | Purpose |
-|---------|---------|
-| `pnpm dev` | Dev server with Turbopack (http://localhost:3000) |
+| ------- | ------- |
+| `pnpm dev` | Dev server with Turbopack (<http://localhost:3000>) |
 | `pnpm build` | Production build |
 | `pnpm check` | Lint + type check (run before committing) |
 | `pnpm lint` | ESLint only |
@@ -24,7 +24,7 @@ No test framework is configured.
 
 ## Architecture
 
-```
+```text
 Frontend (Next.js) ──▶ LangGraph SDK ──▶ LangGraph Backend (lead_agent)
                                               ├── Sub-Agents
                                               └── Tools & Skills
@@ -83,9 +83,15 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 ## Environment
 
 Backend API URLs are optional; an nginx proxy is used by default:
-```
+
+```text
 NEXT_PUBLIC_BACKEND_BASE_URL=http://localhost:8001
 NEXT_PUBLIC_LANGGRAPH_BASE_URL=http://localhost:2024
 ```
+
+Production-mode builds also require `BETTER_AUTH_SECRET` because `src/env.js` validates it when `NODE_ENV=production`.
+Use any 32+ character placeholder for local verification and a real random secret for shared environments.
+`BETTER_AUTH_URL` is optional for the build itself, but setting it avoids Better Auth base URL warnings.
+Prefer real env values locally; reserve `SKIP_ENV_VALIDATION=1` for Docker or CI escape hatches.
 
 Requires Node.js 22+ and pnpm 10.26.2+.

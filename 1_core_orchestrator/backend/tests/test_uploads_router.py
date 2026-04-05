@@ -3,7 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import UploadFile
+from fastapi import BackgroundTasks, UploadFile
 
 from app.gateway.routers import uploads
 
@@ -21,9 +21,13 @@ def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_pat
         patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
+        patch.object(uploads, "get_app_config", return_value=type("Cfg", (), {"vision": {"enabled": False}})()),
+        patch.object(uploads, "_auto_sync_evidence", AsyncMock(return_value={})),
     ):
         file = UploadFile(filename="notes.txt", file=BytesIO(b"hello uploads"))
-        result = asyncio.run(uploads.upload_files("thread-local", files=[file]))
+        result = asyncio.run(
+            uploads.upload_files("thread-local", BackgroundTasks(), files=[file])
+        )
 
     assert result.success is True
     assert len(result.files) == 1
@@ -52,9 +56,13 @@ def test_upload_files_syncs_non_local_sandbox_and_marks_markdown_file(tmp_path):
         patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
         patch.object(uploads, "convert_file_to_markdown", AsyncMock(side_effect=fake_convert)),
+        patch.object(uploads, "get_app_config", return_value=type("Cfg", (), {"vision": {"enabled": False}})()),
+        patch.object(uploads, "_auto_sync_evidence", AsyncMock(return_value={})),
     ):
         file = UploadFile(filename="report.pdf", file=BytesIO(b"pdf-bytes"))
-        result = asyncio.run(uploads.upload_files("thread-aio", files=[file]))
+        result = asyncio.run(
+            uploads.upload_files("thread-aio", BackgroundTasks(), files=[file])
+        )
 
     assert result.success is True
     assert len(result.files) == 1
@@ -82,17 +90,23 @@ def test_upload_files_rejects_dotdot_and_dot_filenames(tmp_path):
         patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
+        patch.object(uploads, "get_app_config", return_value=type("Cfg", (), {"vision": {"enabled": False}})()),
+        patch.object(uploads, "_auto_sync_evidence", AsyncMock(return_value={})),
     ):
         # These filenames must be rejected outright
         for bad_name in ["..", "."]:
             file = UploadFile(filename=bad_name, file=BytesIO(b"data"))
-            result = asyncio.run(uploads.upload_files("thread-local", files=[file]))
+            result = asyncio.run(
+                uploads.upload_files("thread-local", BackgroundTasks(), files=[file])
+            )
             assert result.success is True
             assert result.files == [], f"Expected no files for unsafe filename {bad_name!r}"
 
         # Path-traversal prefixes are stripped to the basename and accepted safely
         file = UploadFile(filename="../etc/passwd", file=BytesIO(b"data"))
-        result = asyncio.run(uploads.upload_files("thread-local", files=[file]))
+        result = asyncio.run(
+            uploads.upload_files("thread-local", BackgroundTasks(), files=[file])
+        )
         assert result.success is True
         assert len(result.files) == 1
         assert result.files[0]["filename"] == "passwd"

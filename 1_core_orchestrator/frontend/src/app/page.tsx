@@ -1,5 +1,6 @@
-import Link from "next/link";
 import { Stethoscope, UserIcon, ArrowRight, HeartPulse } from "lucide-react";
+import Link from "next/link";
+
 import { Badge } from "@/components/ui/badge";
 
 export default function AppEntryPortal() {

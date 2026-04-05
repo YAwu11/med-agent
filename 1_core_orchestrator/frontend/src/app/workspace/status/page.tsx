@@ -1,8 +1,5 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   Clock,
@@ -18,11 +15,15 @@ import {
   MessageSquare,
   RefreshCw,
 } from "lucide-react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import React, { useEffect, useState, useCallback } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { getBackendBaseURL } from "@/core/config";
 import { subscribeToCaseEvents } from "@/core/api/cases";
+import { getBackendBaseURL } from "@/core/config";
+import { cn } from "@/lib/utils";
 
 // ── Types ────────────────────────────────────────────
 interface PatientInfo {
@@ -104,7 +105,7 @@ function PatientStatusContent() {
       const data: CaseData = await res.json();
       setCaseData(data);
       setError(null);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("[StatusPage] Failed to load case:", e);
       setError("加载失败，请稍后再试。");
     } finally {
@@ -119,7 +120,7 @@ function PatientStatusContent() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAllCases(Array.isArray(data?.cases) ? data.cases : Array.isArray(data) ? data : []);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("[StatusPage] Failed to load cases list:", e);
       setError("加载失败，请稍后再试。");
     } finally {
@@ -130,22 +131,24 @@ function PatientStatusContent() {
   // 初次加载 + SSE 实时订阅
   useEffect(() => {
     if (isListMode) {
-      loadAllCases();
+      void loadAllCases();
     } else {
-      loadCase();
+      void loadCase();
     }
 
     const cleanup = subscribeToCaseEvents(
       (event) => {
         if (["diagnosed", "status_change"].includes(event.type)) {
-          if (isListMode) loadAllCases();
-          else loadCase();
+          if (isListMode) void loadAllCases();
+          else void loadCase();
         }
       },
-      () => {},
+      () => undefined,
     );
 
-    const pollInterval = isListMode ? undefined : setInterval(loadCase, 10000);
+    const pollInterval = isListMode ? undefined : setInterval(() => {
+      void loadCase();
+    }, 10000);
 
     return () => {
       cleanup();
@@ -173,7 +176,7 @@ function PatientStatusContent() {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="flex flex-col items-center gap-4 max-w-md text-center">
           <AlertCircle className="h-12 w-12 text-slate-300" />
-          <p className="text-base text-slate-600 font-medium">{error || "暂无问诊记录"}</p>
+          <p className="text-base text-slate-600 font-medium">{error ?? "暂无问诊记录"}</p>
           <Link href="/workspace">
             <Button variant="outline" className="rounded-full">
               <MessageSquare className="h-4 w-4 mr-2" /> 返回对话
@@ -204,7 +207,7 @@ function PatientStatusContent() {
               <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-600 font-bold text-white shadow-sm text-sm">M</div>
               <span className="text-lg font-semibold tracking-tight text-slate-800">我的问诊记录</span>
             </div>
-            <button onClick={loadAllCases} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="刷新">
+            <button onClick={() => { void loadAllCases(); }} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="刷新">
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
@@ -229,7 +232,7 @@ function PatientStatusContent() {
                 return (
                   <Link
                     key={c.case_id}
-                    href={`/workspace/status?thread_id=${c.patient_thread_id || c.case_id}`}
+                    href={`/workspace/status?thread_id=${c.patient_thread_id ?? c.case_id}`}
                     className="block bg-white rounded-2xl border border-slate-200 shadow-sm p-6 hover:shadow-md hover:border-blue-200 transition-all group"
                   >
                     <div className="flex items-center gap-5">
@@ -238,10 +241,10 @@ function PatientStatusContent() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-1">
-                          <span className="text-base font-bold text-slate-800">{c.patient_info.name || "未登记"}</span>
+                          <span className="text-base font-bold text-slate-800">{c.patient_info.name ?? "未登记"}</span>
                           <Badge variant="outline" className={`text-[10px] ${sl.cls}`}>{sl.text}</Badge>
                         </div>
-                        <p className="text-sm text-slate-600 truncate">{c.patient_info.chief_complaint || "未填写主诉"}</p>
+                        <p className="text-sm text-slate-600 truncate">{c.patient_info.chief_complaint ?? "未填写主诉"}</p>
                       </div>
                       <div className="text-right shrink-0">
                         {c.diagnosis && (
@@ -283,7 +286,7 @@ function PatientStatusContent() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={loadCase} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="刷新">
+            <button onClick={() => { void loadCase(); }} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="刷新">
               <RefreshCw className="h-4 w-4" />
             </button>
             <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">
@@ -392,7 +395,7 @@ function PatientStatusContent() {
           </h3>
           <div className="space-y-4">
             {cd.evidence.map((ev, idx) => {
-              const EvIcon = evidenceIcons[ev.type] || FileText;
+              const EvIcon = evidenceIcons[ev.type] ?? FileText;
               return (
                 <div
                   key={idx}

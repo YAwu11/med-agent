@@ -282,12 +282,12 @@ export function FindingsList({
               <span className="text-xs text-slate-500 font-medium whitespace-nowrap">位置:</span>
               {readonly ? (
                 <p className="text-xs text-slate-700 flex-1 truncate">
-                  {finding.location_cn || finding.location || "待标注"}
+                  {finding.location_cn ?? finding.location ?? "待标注"}
                 </p>
               ) : (
                 <input
                   type="text"
-                  value={finding.location_cn || finding.location || ""}
+                  value={finding.location_cn ?? finding.location ?? ""}
                   placeholder="待标注"
                   onChange={(e) => {
                     onUpdate?.(finding.id, {
@@ -307,7 +307,7 @@ export function FindingsList({
                 <input
                   type="text"
                   placeholder="添加医生批注..."
-                  value={finding.doctor_note || ""}
+                  value={finding.doctor_note ?? ""}
                   onChange={(e) => onUpdate?.(finding.id, {
                     doctor_note: e.target.value,
                     reviewed_by_doctor: true,

@@ -7,22 +7,26 @@ Provides REST API for the frontend to:
 """
 
 import json
-from loguru import logger
+import os
+import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
+import httpx
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
 from app.core.config.paths import get_paths
 from app.gateway.services.case_db import (
-    sync_report_from_file,
-    get_reports_by_thread,
-    get_report_by_id,
-    update_report,
     get_case_by_thread,
+    get_report_by_id,
+    get_reports_by_thread,
+    sync_report_from_file,
+    update_evidence_data,
+    update_report,
 )
-
 
 router = APIRouter(
     prefix="/api/threads/{thread_id}/imaging-reports",
@@ -151,10 +155,6 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     [Phase 6 Stateless Endpoint] 
     Bypass LangGraph and run CV model (YOLO/DenseNet) directly on the uploaded image via MCP SSE.
     """
-    import asyncio
-    import uuid
-    import httpx
-    
     report_id = f"cv_{uuid.uuid4().hex[:8]}"
     reports_dir = _get_reports_dir(thread_id)
     
@@ -172,8 +172,7 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     
     local_image_path = ""
     if image_url:
-        import urllib.parse
-        decoded_url = urllib.parse.unquote(image_url)
+        decoded_url = unquote(image_url)
         
         if decoded_url.startswith(f"/api/threads/{thread_id}/artifacts/"):
             virtual_path = decoded_url.split(f"/api/threads/{thread_id}/artifacts/", 1)[1]
@@ -207,12 +206,11 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     # Check if a report already exists for this image (from parallel analyzer)
     image_filename = Path(local_image_path).name
     if reports_dir.exists():
-        import urllib.parse
         for report_file in reports_dir.glob("*.json"):
             try:
                 report_data = json.loads(report_file.read_text(encoding="utf-8"))
                 db_image_path = report_data.get("image_path", "")
-                decoded_db_image_path = urllib.parse.unquote(db_image_path)
+                decoded_db_image_path = unquote(db_image_path)
                 if db_image_path and Path(decoded_db_image_path).name == image_filename:
                     logger.info(f"[HITL] Using existing report found for {image_filename}")
                     
@@ -295,12 +293,11 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
 
     # 4. Sync the structured data to the case evidence database
     try:
-        from app.gateway.services.case_db import get_case_by_thread, update_evidence_data
         case = get_case_by_thread(thread_id)
         if case:
             for item in case.evidence:
                 # Match by exact URL or filename
-                if item.file_path == image_url or (item.file_path and Path(urllib.parse.unquote(item.file_path)).name == image_filename):
+                if item.file_path == image_url or (item.file_path and Path(unquote(item.file_path)).name == image_filename):
                     update_evidence_data(case.case_id, item.evidence_id, {
                         "structured_data": generated_data
                     })
@@ -317,9 +314,6 @@ async def generate_text_draft(thread_id: str, request: GenerateDraftRequest):
     Takes the doctor's reviewed JSON + optional instructions, calls SiliconFlow LLM
     to generate a readable radiology report. No memory, no LangGraph loop.
     """
-    import os
-    import httpx
-
     findings = request.doctor_result.get("findings", [])
     densenet_probs = request.doctor_result.get("densenet_probs", {})
 
