@@ -1,5 +1,7 @@
 import type { Message, Thread } from "@langchain/langgraph-sdk";
 
+import type { SystemNotice } from "@/core/patient/systemNotices";
+
 import type { Todo } from "../todos";
 
 export interface AgentThreadState extends Record<string, unknown> {
@@ -7,6 +9,7 @@ export interface AgentThreadState extends Record<string, unknown> {
   messages: Message[];
   artifacts: string[];
   todos?: Todo[];
+  system_notices?: SystemNotice[];
 }
 
 export interface AgentThread extends Thread<AgentThreadState> {}

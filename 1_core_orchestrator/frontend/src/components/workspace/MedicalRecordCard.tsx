@@ -16,6 +16,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getBackendBaseURL } from "@/core/config";
 import {
+  REQUIRED_PATIENT_INFO_FIELDS,
+} from "@/core/patient/patientInfoSchema";
+import {
+  buildPatientFieldChanges,
+  computeDirtyFields,
+  type PatientInfoSaveEvent,
+} from "@/core/patient/patientInfoUpdates";
+import {
   listUploadedFiles,
   uploadFiles,
   type UploadedFileInfo,
@@ -70,13 +78,23 @@ interface MedicalRecordCardProps {
   data: MedicalRecordData;
   mode?: "inline" | "dialog";
   onRefresh?: () => Promise<void> | void;
+  onPatientInfoSaved?: (event: PatientInfoSaveEvent) => Promise<void> | void;
+  onActionBarChange?: (actions: MedicalRecordDialogActions | null) => void;
+}
+
+export interface MedicalRecordDialogActions {
+  isDirty: boolean;
+  isSaving: boolean;
+  uploadsLoading: boolean;
+  currentPatientInfo: PatientInfoState;
+  onReset: () => void;
+  onRefreshUploads: () => void;
+  onSave: () => void;
 }
 
 type FormValue = string | number | null;
 type PatientInfoState = Record<string, FormValue>;
 type QuickFillAction = "append" | "replace";
-
-const REQUIRED_FIELDS = ["name", "age", "sex", "chief_complaint"];
 
 const QUICK_FILL_PRESETS: Record<
   string,
@@ -174,33 +192,6 @@ function mergePreset(currentValue: FormValue | undefined, nextValue: string): st
   return `${currentText}；${nextValue}`;
 }
 
-function isBrainEvidence(item: MedicalRecordEvidence): boolean {
-  return (
-    item.pipeline === "brain_nifti_v1" ||
-    item.viewer_kind === "brain_spatial_review" ||
-    item.modality?.startsWith("brain_mri") === true
-  );
-}
-
-function formatReviewStatus(status?: string): string | null {
-  switch (status) {
-    case "reviewed":
-      return "已医生复核";
-    case "pending_review":
-    case "pending_doctor_review":
-      return "待医生复核";
-    case "processing":
-    case "queued":
-    case "running":
-      return "处理中";
-    case "failed":
-    case "error":
-      return "处理失败";
-    default:
-      return null;
-  }
-}
-
 function FieldLabel({
   htmlFor,
   label,
@@ -284,15 +275,7 @@ function SectionCard({
   );
 }
 
-function UploadPreviewCard({
-  file,
-  status,
-  isAbnormal,
-}: {
-  file: UploadedFileInfo;
-  status: string;
-  isAbnormal: boolean;
-}) {
+function UploadPreviewCard({ file }: { file: UploadedFileInfo }) {
   const fileUrl = buildUploadUrl(file);
 
   return (
@@ -310,21 +293,8 @@ function UploadPreviewCard({
         />
         <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-slate-950/75 via-slate-950/20 to-transparent px-3 pb-3 pt-8 text-[11px] text-white">
           <span className="max-w-[70%] truncate font-medium">{file.filename}</span>
-          <span
-            className={cn(
-              "rounded-full px-2 py-1 font-medium",
-              status === "processing"
-                ? "bg-amber-400/90 text-slate-950"
-                : isAbnormal
-                  ? "bg-rose-500/90 text-white"
-                  : "bg-emerald-500/90 text-white",
-            )}
-          >
-            {status === "processing"
-              ? "待识别"
-              : isAbnormal
-                ? "已识别 · 异常"
-                : "已识别"}
+          <span className="rounded-full bg-cyan-500/90 px-2 py-1 font-medium text-white">
+            已归档
           </span>
         </div>
       </div>
@@ -336,6 +306,8 @@ export function MedicalRecordCard({
   data,
   mode = "inline",
   onRefresh,
+  onPatientInfoSaved,
+  onActionBarChange,
 }: MedicalRecordCardProps) {
   const [savedInfo, setSavedInfo] = useState<PatientInfoState>(
     data.patient_info || {},
@@ -399,7 +371,22 @@ export function MedicalRecordCard({
     setSaveMessage(null);
   }, [savedInfo]);
 
+  const handleRefreshUploadsAction = useCallback(() => {
+    void refreshUploads();
+  }, [refreshUploads]);
+
+  const dirtyFields = useMemo(
+    () => computeDirtyFields(savedInfo, editedInfo),
+    [editedInfo, savedInfo],
+  );
+
+  const isDirty = useMemo(() => Object.keys(dirtyFields).length > 0, [dirtyFields]);
+
   const handleSave = useCallback(async () => {
+    if (!isDirty) {
+      return;
+    }
+
     setIsSaving(true);
     setSaveMessage(null);
     try {
@@ -408,17 +395,29 @@ export function MedicalRecordCard({
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(editedInfo),
+          body: JSON.stringify(dirtyFields),
         },
       );
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
       const result = (await response.json()) as { patient_info?: PatientInfoState };
-      const nextSavedInfo = result.patient_info ?? editedInfo;
+      const changes = buildPatientFieldChanges(savedInfo, dirtyFields);
+      const nextSavedInfo = result.patient_info ?? { ...savedInfo, ...dirtyFields };
       setSavedInfo(nextSavedInfo);
       setEditedInfo(nextSavedInfo);
       setSaveMessage("病历单已保存");
+      const saveEvent: PatientInfoSaveEvent = {
+        changes,
+        dirtyFields,
+      };
+      if (changes.length > 0 && onPatientInfoSaved) {
+        try {
+          await onPatientInfoSaved(saveEvent);
+        } catch (error) {
+          console.warn("Failed to send patient info update to chat", error);
+        }
+      }
       setTimeout(() => setSaveMessage(null), 2200);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "保存失败";
@@ -426,7 +425,11 @@ export function MedicalRecordCard({
     } finally {
       setIsSaving(false);
     }
-  }, [data.thread_id, editedInfo]);
+  }, [data.thread_id, dirtyFields, isDirty, onPatientInfoSaved, savedInfo]);
+
+  const handleSaveAction = useCallback(() => {
+    void handleSave();
+  }, [handleSave]);
 
   const handleUploadFiles = useCallback(
     async (files: FileList | null) => {
@@ -440,7 +443,7 @@ export function MedicalRecordCard({
         await uploadFiles(data.thread_id, Array.from(files));
         await Promise.all([refreshUploads(), Promise.resolve(onRefresh?.())]);
         setShowEvidence(true);
-        setUploadMessage("资料已上传，系统正在解析");
+        setUploadMessage("资料已上传，已归档到病例页");
         window.setTimeout(() => setUploadMessage(null), 2600);
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "上传失败";
@@ -454,9 +457,36 @@ export function MedicalRecordCard({
 
   const guidance = data.guidance;
 
+  useEffect(() => {
+    if (!onActionBarChange) {
+      return;
+    }
+
+    onActionBarChange({
+      isDirty,
+      isSaving,
+      uploadsLoading,
+      currentPatientInfo: editedInfo,
+      onReset: resetChanges,
+      onRefreshUploads: handleRefreshUploadsAction,
+      onSave: handleSaveAction,
+    });
+
+    return () => onActionBarChange(null);
+  }, [
+    editedInfo,
+    handleRefreshUploadsAction,
+    handleSaveAction,
+    isDirty,
+    isSaving,
+    onActionBarChange,
+    resetChanges,
+    uploadsLoading,
+  ]);
+
   const requiredFilledCount = useMemo(
     () =>
-      REQUIRED_FIELDS.filter((field) => normalizeValue(editedInfo[field]).length > 0)
+      REQUIRED_PATIENT_INFO_FIELDS.filter((field) => normalizeValue(editedInfo[field]).length > 0)
         .length,
     [editedInfo],
   );
@@ -468,23 +498,6 @@ export function MedicalRecordCard({
     [editedInfo],
   );
 
-  const isDirty = useMemo(() => {
-    const keys = new Set([...Object.keys(savedInfo), ...Object.keys(editedInfo)]);
-    return [...keys].some(
-      (key) => normalizeValue(savedInfo[key]) !== normalizeValue(editedInfo[key]),
-    );
-  }, [editedInfo, savedInfo]);
-
-  const evidenceByFilename = useMemo(() => {
-    const map = new Map<string, MedicalRecordEvidence>();
-    data.evidence_items.forEach((item) => {
-      if (item.filename) {
-        map.set(item.filename, item);
-      }
-    });
-    return map;
-  }, [data.evidence_items]);
-
   const previewableUploads = useMemo(
     () => uploads.filter((file) => isPreviewableImage(file.filename)),
     [uploads],
@@ -494,14 +507,6 @@ export function MedicalRecordCard({
     () => uploads.filter((file) => !isPreviewableImage(file.filename)),
     [uploads],
   );
-
-  const abnormalCount = data.evidence_items.filter((item) => item.is_abnormal).length;
-  const completedEvidenceCount = data.evidence_items.filter(
-    (item) => item.status === "completed",
-  ).length;
-  const processingEvidenceCount = data.evidence_items.filter(
-    (item) => item.status === "processing",
-  ).length;
 
   return (
     <div
@@ -519,10 +524,10 @@ export function MedicalRecordCard({
               </div>
               <div>
                 <h2 className="text-xl font-semibold tracking-tight text-slate-950">
-                  病历页
+                  登记与资料
                 </h2>
                 <p className="mt-1 text-sm leading-6 text-slate-600">
-                  这里保存当前就诊信息与上传资料，可随时补充和修改后再提交给医生。
+                  这里保存当前问诊登记信息和已归档资料，可随时补充后再提交挂号。
                 </p>
               </div>
             </div>
@@ -535,68 +540,20 @@ export function MedicalRecordCard({
 
             <div className="mt-4 flex flex-wrap gap-2">
               <span className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-medium text-cyan-800">
-                {requiredFilledCount}/{REQUIRED_FIELDS.length} 必填已完成
+                {requiredFilledCount}/{REQUIRED_PATIENT_INFO_FIELDS.length} 必填已完成
               </span>
               <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">
                 已填写 {totalFilledCount} 项
               </span>
               <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">
-                已识别资料 {completedEvidenceCount} 份
+                已归档资料 {uploads.length} 份
               </span>
-              {processingEvidenceCount > 0 ? (
-                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800">
-                  处理中 {processingEvidenceCount} 份
-                </span>
-              ) : null}
-              {abnormalCount > 0 ? (
-                <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-medium text-rose-700">
-                  异常提示 {abnormalCount} 项
-                </span>
-              ) : null}
             </div>
 
-            {guidance ? (
-              <div
-                className={cn(
-                  "mt-4 rounded-3xl border px-4 py-4",
-                  guidance.ready_for_ai_summary
-                    ? "border-emerald-200 bg-emerald-50/80"
-                    : "border-amber-200 bg-amber-50/80",
-                )}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={cn(
-                      "rounded-full px-3 py-1 text-xs font-semibold",
-                      guidance.ready_for_ai_summary
-                        ? "bg-emerald-100 text-emerald-700"
-                        : "bg-amber-100 text-amber-800",
-                    )}
-                  >
-                    {guidance.ready_for_ai_summary ? "资料已具备综合判断条件" : "仍需补充或等待解析"}
-                  </span>
-                  <span className="text-sm font-medium text-slate-900">
-                    {guidance.status_text}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  {guidance.next_action}
-                </p>
-                {guidance.missing_required_fields.length > 0 ? (
-                  <p className="mt-2 text-xs leading-5 text-slate-500">
-                    待补字段：{guidance.missing_required_fields.join("、")}
-                  </p>
-                ) : null}
-                {guidance.pending_files.length > 0 ? (
-                  <p className="mt-1 text-xs leading-5 text-slate-500">
-                    待解析资料：{guidance.pending_files.join("、")}
-                  </p>
-                ) : null}
-                {guidance.failed_files && guidance.failed_files.length > 0 ? (
-                  <p className="mt-1 text-xs leading-5 text-slate-500">
-                    解析失败资料：{guidance.failed_files.join("、")}
-                  </p>
-                ) : null}
+            {guidance?.next_action ? (
+              <div className="mt-4 rounded-3xl border border-cyan-100 bg-white/80 px-4 py-4">
+                <p className="text-sm font-medium text-slate-900">当前建议</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{guidance.next_action}</p>
               </div>
             ) : null}
           </div>
@@ -618,7 +575,7 @@ export function MedicalRecordCard({
               <span
                 className={cn(
                   "rounded-full px-3 py-1 text-xs font-medium",
-                  uploadMessage === "资料已上传，系统正在解析"
+                  uploadMessage === "资料已上传，已归档到病例页"
                     ? "bg-cyan-100 text-cyan-800"
                     : "bg-rose-100 text-rose-700",
                 )}
@@ -626,36 +583,40 @@ export function MedicalRecordCard({
                 {uploadMessage}
               </span>
             ) : null}
-            <button
-              type="button"
-              onClick={resetChanges}
-              disabled={!isDirty || isSaving}
-              className="min-h-11 cursor-pointer rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              恢复未保存
-            </button>
-            <button
-              type="button"
-              onClick={() => void refreshUploads()}
-              disabled={uploadsLoading}
-              className="min-h-11 cursor-pointer rounded-full border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-medium text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span className="inline-flex items-center gap-2">
-                <RefreshCw className={cn("size-4", uploadsLoading && "animate-spin")} />
-                刷新资料
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={!isDirty || isSaving}
-              className="min-h-11 cursor-pointer rounded-full bg-emerald-600 px-5 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(5,150,105,0.24)] transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-emerald-300"
-            >
-              <span className="inline-flex items-center gap-2">
-                {isSaving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
-                保存更改
-              </span>
-            </button>
+            {!onActionBarChange ? (
+              <>
+                <button
+                  type="button"
+                  onClick={resetChanges}
+                  disabled={!isDirty || isSaving}
+                  className="min-h-11 cursor-pointer rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  恢复未保存
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRefreshUploadsAction}
+                  disabled={uploadsLoading}
+                  className="min-h-11 cursor-pointer rounded-full border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-medium text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <RefreshCw className={cn("size-4", uploadsLoading && "animate-spin")} />
+                    刷新资料
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAction}
+                  disabled={!isDirty || isSaving}
+                  className="min-h-11 cursor-pointer rounded-full bg-emerald-600 px-5 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(5,150,105,0.24)] transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    {isSaving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
+                    保存更改
+                  </span>
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
       </div>
@@ -839,7 +800,7 @@ export function MedicalRecordCard({
 
         <SectionCard
           title="上传资料确认"
-          description="这里会显示上传原图，便于确认是否传对资料；识别摘要会保留在下方。"
+          description="这里只保留原图预览和文件归档列表，专业解读会转到医生端处理。"
           icon={<FileImage className="size-5" />}
         >
           <input
@@ -858,7 +819,7 @@ export function MedicalRecordCard({
             <div>
               <p className="text-sm font-medium text-slate-900">原图预览与补充上传</p>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                可直接在这里补传检查单、化验单或影像图片。上传后会自动归入病例页，不会额外生成一条聊天消息。
+                可直接在这里补传检查单、化验单或影像图片。上传后会自动归入病例页，患者端不再展示解析进度或分析摘要。
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -894,17 +855,9 @@ export function MedicalRecordCard({
                 </div>
               ) : previewableUploads.length > 0 ? (
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {previewableUploads.map((file) => {
-                    const matchedEvidence = evidenceByFilename.get(file.filename);
-                    return (
-                      <UploadPreviewCard
-                        key={file.filename}
-                        file={file}
-                        status={matchedEvidence?.status ?? "processing"}
-                        isAbnormal={matchedEvidence?.is_abnormal ?? false}
-                      />
-                    );
-                  })}
+                  {previewableUploads.map((file) => (
+                    <UploadPreviewCard key={file.filename} file={file} />
+                  ))}
                 </div>
               ) : (
                 <div className="flex min-h-40 flex-col items-center justify-center rounded-3xl border border-dashed border-cyan-200 bg-white/70 px-6 text-center">
@@ -939,100 +892,8 @@ export function MedicalRecordCard({
                 </div>
               ) : null}
 
-              <div className="grid gap-3 lg:grid-cols-2">
-                {data.evidence_items.length > 0 ? (
-                  data.evidence_items.map((item) => {
-                    const brainEvidence = isBrainEvidence(item);
-                    const reviewStatusLabel = brainEvidence
-                      ? formatReviewStatus(item.review_status)
-                      : null;
-
-                    return (
-                      <div
-                        key={item.id}
-                        className={cn(
-                          "rounded-3xl border px-4 py-3",
-                          item.status === "processing"
-                            ? "border-amber-200 bg-amber-50/80"
-                            : item.is_abnormal
-                              ? "border-rose-200 bg-rose-50/80"
-                              : "border-emerald-200 bg-emerald-50/80",
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-                            <p className="mt-1 text-xs text-slate-500">{item.filename}</p>
-                          </div>
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <span
-                              className={cn(
-                                "rounded-full px-2.5 py-1 text-[11px] font-semibold",
-                                item.status === "processing"
-                                  ? "bg-amber-100 text-amber-800"
-                                  : item.is_abnormal
-                                    ? "bg-rose-100 text-rose-700"
-                                    : "bg-emerald-100 text-emerald-700",
-                              )}
-                            >
-                              {item.status === "processing"
-                                ? "处理中"
-                                : brainEvidence
-                                  ? "脑 MRI"
-                                  : item.type === "imaging"
-                                    ? "影像分析"
-                                    : "化验摘要"}
-                            </span>
-                            {reviewStatusLabel ? (
-                              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700">
-                                {reviewStatusLabel}
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        {brainEvidence && item.spatial_info?.location ? (
-                          <p className="mt-3 text-sm text-slate-600">
-                            定位区域：{item.spatial_info.location}
-                          </p>
-                        ) : null}
-                        {item.findings_brief ? (
-                          <p className="mt-3 text-sm leading-6 text-slate-600">
-                            {item.findings_brief}
-                          </p>
-                        ) : null}
-                        {brainEvidence && item.findings_count ? (
-                          <p className="mt-2 text-xs text-slate-500">
-                            AI 共标记 {item.findings_count} 处关键病灶
-                          </p>
-                        ) : null}
-                        {item.ocr_summary ? (
-                          <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-600">
-                            {item.ocr_summary}
-                          </p>
-                        ) : null}
-                        {brainEvidence && item.report_text ? (
-                          <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-600">
-                            {item.report_text}
-                          </p>
-                        ) : null}
-                        {brainEvidence && item.spatial_info?.clinical_warning ? (
-                          <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                            {item.spatial_info.clinical_warning}
-                          </p>
-                        ) : null}
-                        {item.status === "processing" ? (
-                          <p className="mt-3 text-sm text-amber-700">
-                            AI 正在识别该资料，请稍候刷新查看结果。
-                          </p>
-                        ) : null}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm text-slate-500">
-                    识别结果会在上传完成后自动汇总到这里。
-                  </div>
-                )}
+              <div className="rounded-3xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm leading-6 text-slate-500">
+                当前患者端仅展示已归档资料名称和原图预览；OCR、影像异常、结构化分析与医生复核信息均在医生端处理。
               </div>
 
               {uploadsError ? (
@@ -1049,7 +910,7 @@ export function MedicalRecordCard({
         <div className="flex items-start gap-2 leading-6">
           <Info className="mt-0.5 size-4 shrink-0 text-cyan-700" />
           <span>
-            病历单支持随时修改，也支持直接在病例页补传资料。建议先补齐姓名、年龄、性别和主诉，再等待上传资料解析完成；系统识别结果仅供初步参考，最终诊断仍需医生确认。
+            登记信息支持随时修改，也支持直接在这里补传资料。建议先补齐姓名、年龄、性别和主诉，再提交挂号；资料的专业解读和复核会在医生端继续完成。
           </span>
         </div>
       </div>

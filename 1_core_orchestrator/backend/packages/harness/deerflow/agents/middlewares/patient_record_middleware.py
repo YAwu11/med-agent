@@ -1,4 +1,4 @@
-"""Inject patient record snapshot context into each new human turn."""
+"""Inject patient record delta context into each new human turn when needed."""
 
 from typing import NotRequired, override
 
@@ -9,8 +9,9 @@ from langgraph.runtime import Runtime
 
 from deerflow.config.paths import Paths, get_paths
 from deerflow.patient_record_context import (
+    build_patient_record_delta,
     build_patient_record_snapshot,
-    format_patient_record_block,
+    format_patient_record_delta_block,
     has_patient_record_content,
 )
 
@@ -49,25 +50,41 @@ class PatientRecordMiddleware(AgentMiddleware[PatientRecordMiddlewareState]):
         if not has_patient_record_content(snapshot):
             return None
 
-        patient_record_block = format_patient_record_block(snapshot)
-        if not patient_record_block:
-            return None
+        context_event = last_message.additional_kwargs.get("context_event", {})
+        if isinstance(context_event, dict) and context_event.get("kind") == "patient_record_delta":
+            return {
+                "messages": messages,
+                "patient_record_snapshot": snapshot,
+            }
 
-        original_content = ""
-        if isinstance(last_message.content, str):
-            original_content = last_message.content
-        elif isinstance(last_message.content, list):
-            text_parts: list[str] = []
-            for block in last_message.content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text_parts.append(str(block.get("text", "")))
-            original_content = "\n".join(text_parts)
+        previous_snapshot = state.get("patient_record_snapshot")
+        if not isinstance(previous_snapshot, dict):
+            return {
+                "messages": messages,
+                "patient_record_snapshot": snapshot,
+            }
 
-        messages[last_message_index] = HumanMessage(
-            content=f"{patient_record_block}\n\n{original_content}",
-            id=last_message.id,
-            additional_kwargs=last_message.additional_kwargs,
+        delta = build_patient_record_delta(previous_snapshot, snapshot)
+        patient_record_delta_block = format_patient_record_delta_block(delta)
+        if not patient_record_delta_block:
+            return {
+                "messages": messages,
+                "patient_record_snapshot": snapshot,
+            }
+
+        hidden_delta_message = HumanMessage(
+            content=patient_record_delta_block,
+            id=(f"{last_message.id}:patient-record-delta" if last_message.id else None),
+            additional_kwargs={
+                "context_event": {
+                    "kind": "patient_record_delta",
+                    "hidden": True,
+                    "source": "middleware_fallback",
+                    "revision": delta.get("revision", 0),
+                }
+            },
         )
+        messages.insert(last_message_index, hidden_delta_message)
 
         return {
             "messages": messages,

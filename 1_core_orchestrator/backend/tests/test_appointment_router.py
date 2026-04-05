@@ -96,6 +96,122 @@ def test_confirm_appointment_normalizes_lab_evidence_before_case_persist(tmp_pat
     assert evidence_request.ai_analysis == "WBC 升高"
 
 
+def test_confirm_appointment_preserves_patient_info_fields(tmp_path: Path):
+    thread_id = "thread-patient-info"
+    paths = Paths(base_dir=tmp_path / ".deer-flow")
+    paths.ensure_thread_dirs(thread_id)
+    (paths.sandbox_user_data_dir(thread_id) / "patient_intake.json").write_text(
+        json.dumps(
+            {
+                "_field_meta": {
+                    "name": {
+                        "source": "agent",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                    }
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    created_cases: list[Case] = []
+
+    def _capture_create_case(req):
+        created_case = Case(
+            case_id="case-preserve-info",
+            patient_thread_id=thread_id,
+            patient_info=req.patient_info,
+            priority=req.priority,
+        )
+        created_cases.append(created_case)
+        return created_case
+
+    with (
+        patch("app.gateway.routers.appointment.get_paths", return_value=paths),
+        patch("app.gateway.services.case_db.get_case_by_thread", return_value=None),
+        patch("app.gateway.services.case_db.create_case", side_effect=_capture_create_case),
+        patch("app.gateway.services.case_db.sync_report_from_file"),
+        patch("app.gateway.routers.cases._broadcast_event"),
+    ):
+        with TestClient(_make_app(), raise_server_exceptions=False) as client:
+            response = client.post(
+                f"/api/threads/{thread_id}/confirm-appointment",
+                json={
+                    "patient_info": {
+                        "name": "张三",
+                        "age": 45,
+                        "chief_complaint": "胸痛 2 天",
+                    },
+                    "selected_evidence_ids": [],
+                    "priority": "medium",
+                },
+            )
+
+    assert response.status_code == 200
+    assert len(created_cases) == 1
+    assert created_cases[0].patient_info.name == "张三"
+    assert created_cases[0].patient_info.age == 45
+    assert created_cases[0].patient_info.chief_complaint == "胸痛 2 天"
+
+    intake_payload = json.loads(
+        (paths.sandbox_user_data_dir(thread_id) / "patient_intake.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert intake_payload["name"] == "张三"
+    assert intake_payload["age"] == 45
+    assert intake_payload["chief_complaint"] == "胸痛 2 天"
+    assert intake_payload["_field_meta"]["name"]["source"] == "agent"
+
+
+def test_patch_patient_intake_tracks_field_meta_and_removes_deleted_entries(tmp_path: Path):
+    thread_id = "thread-patch-meta"
+    paths = Paths(base_dir=tmp_path / ".deer-flow")
+    paths.ensure_thread_dirs(thread_id)
+    intake_file = paths.sandbox_user_data_dir(thread_id) / "patient_intake.json"
+    intake_file.write_text(
+        json.dumps(
+            {
+                "chief_complaint": "发热",
+                "_field_meta": {
+                    "chief_complaint": {
+                        "source": "agent",
+                        "updated_at": "2026-04-05T00:00:00Z",
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("app.gateway.routers.appointment.get_paths", return_value=paths):
+        with TestClient(_make_app(), raise_server_exceptions=False) as client:
+            response = client.patch(
+                f"/api/threads/{thread_id}/patient-intake",
+                json={
+                    "chief_complaint": "",
+                    "allergies": "青霉素过敏",
+                },
+            )
+
+    assert response.status_code == 200
+    response_payload = response.json()["patient_info"]
+    assert "_field_meta" not in response_payload
+    assert response_payload["allergies"] == "青霉素过敏"
+    assert "chief_complaint" not in response_payload
+
+    intake_payload = json.loads(intake_file.read_text(encoding="utf-8"))
+    assert intake_payload["allergies"] == "青霉素过敏"
+    assert "chief_complaint" not in intake_payload
+    assert intake_payload["_field_meta"]["allergies"]["source"] == "patient"
+    assert intake_payload["_field_meta"]["allergies"]["updated_at"]
+    assert "chief_complaint" not in intake_payload["_field_meta"]
+
+
 def test_get_appointment_preview_reuses_patient_snapshot_brain_contract(tmp_path: Path):
     thread_id = "thread-brain"
     paths = Paths(base_dir=tmp_path / ".deer-flow")

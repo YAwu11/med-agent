@@ -7,6 +7,7 @@ from typing import Callable, Sequence, Awaitable
 
 from .analyzer_registry import AnalysisResult, get_analyzers_for
 from .circuit_breaker import apply_circuit_breaker
+from .triage_contract import attach_triage_contract
 
 
 # [ADR-025] Constraint: 8GB VRAM environment -> Run GPU-intensive tasks sequentially
@@ -40,6 +41,7 @@ async def analyze_single_file(
             filename=filename, category=category, confidence=confidence,
             analyzer_name="none", evidence_type="note",
             evidence_title=filename,
+            structured_data=attach_triage_contract(None, category=category, confidence=confidence),
         )
 
     # Use the first matched analyzer (highest priority)
@@ -64,6 +66,11 @@ async def analyze_single_file(
         result.analyzer_name = spec.name
         # [ADR-034] 后置熔断拦截：根据病种策略打上 review_status 标记
         result = apply_circuit_breaker(result)
+        result.structured_data = attach_triage_contract(
+            result.structured_data,
+            category=category,
+            confidence=confidence,
+        )
         return result
     except Exception as e:
         logger.error(f"Analyzer {spec.name} failed on {filename}: {e}", exc_info=True)

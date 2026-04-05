@@ -14,6 +14,7 @@ import Link from "next/link";
 import React, { useState, useCallback } from "react";
 
 import { getBackendBaseURL } from "@/core/config";
+import { APPOINTMENT_PREVIEW_FIELDS } from "@/core/patient/patientInfoSchema";
 import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────
@@ -38,7 +39,7 @@ interface EvidenceItem {
   };
 }
 
-interface AppointmentPreviewData {
+export interface AppointmentPreviewData {
   type: "appointment_preview";
   thread_id: string;
   patient_info: Record<string, string | number | null>;
@@ -61,6 +62,7 @@ interface ConfirmedData {
 
 interface AppointmentPreviewProps {
   data: AppointmentPreviewData;
+  onCancel?: () => void;
 }
 
 // ── Priority config ───────────────────────────────────────
@@ -96,7 +98,7 @@ function formatReviewStatus(status?: string): string | null {
 
 // ── Component ─────────────────────────────────────────────
 
-export function AppointmentPreview({ data }: AppointmentPreviewProps) {
+export function AppointmentPreview({ data, onCancel }: AppointmentPreviewProps) {
   // Editable patient info
   const [patientInfo, setPatientInfo] = useState<Record<string, string | number | null>>(
     data.patient_info ?? {}
@@ -197,16 +199,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
 
   const priority = priorityConfig[data.suggested_priority] ?? priorityConfig.medium!;
 
-  // Patient info fields to display
-  const fields: { key: string; label: string; placeholder: string }[] = [
-    { key: "name", label: "姓名", placeholder: "请输入姓名" },
-    { key: "age", label: "年龄", placeholder: "请输入年龄" },
-    { key: "sex", label: "性别", placeholder: "男/女" },
-    { key: "chief_complaint", label: "主诉", placeholder: "主要症状" },
-    { key: "present_illness", label: "现病史", placeholder: "症状发展经过" },
-    { key: "past_history", label: "既往病史", placeholder: "无" },
-    { key: "allergy_history", label: "过敏史", placeholder: "无" },
-  ];
+  const fields = APPOINTMENT_PREVIEW_FIELDS;
 
   return (
     <div className="my-3 w-full max-w-lg rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50/80 to-indigo-50/60 shadow-sm overflow-hidden">
@@ -358,6 +351,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
         <button
           className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
           disabled={isSubmitting}
+          onClick={onCancel}
         >
           <X className="h-3.5 w-3.5" />
           取消

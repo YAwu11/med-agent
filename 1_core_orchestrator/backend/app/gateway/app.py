@@ -9,12 +9,14 @@ from app.gateway.routers import (
     appointment,
     artifacts,
     cases,
+    doctor_synthesis,
     imaging_reports,
     mcp,
     models,
     settings_api,
     skills,
     suggestions,
+    thread_events,
     threads,
     uploads,
     knowledge_proxy,
@@ -180,8 +182,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
     app.include_router(artifacts.router)
     app.include_router(uploads.router)
     app.include_router(threads.router)
+    app.include_router(thread_events.router)
     app.include_router(suggestions.router)
     app.include_router(cases.router)
+    app.include_router(doctor_synthesis.router)
     app.include_router(imaging_reports.router)
     app.include_router(settings_api.router)
     app.include_router(knowledge_proxy.router)

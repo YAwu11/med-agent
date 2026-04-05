@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphInterrupt
 
+from app.core.tools.errors import FatalToolExecutionError
 from deerflow.agents.middlewares.tool_error_handling_middleware import ToolErrorHandlingMiddleware
 
 
@@ -67,6 +68,17 @@ def test_wrap_tool_call_reraises_graph_interrupt():
         middleware.wrap_tool_call(req, _interrupt)
 
 
+def test_wrap_tool_call_reraises_fatal_tool_execution_error():
+    middleware = ToolErrorHandlingMiddleware()
+    req = _request(name="rag_retrieve", tool_call_id="tc-fatal")
+
+    def _boom(_req):
+        raise FatalToolExecutionError("rag service is down")
+
+    with pytest.raises(FatalToolExecutionError, match="rag service is down"):
+        middleware.wrap_tool_call(req, _boom)
+
+
 @pytest.mark.anyio
 async def test_awrap_tool_call_returns_error_tool_message_on_exception():
     middleware = ToolErrorHandlingMiddleware()
@@ -94,3 +106,15 @@ async def test_awrap_tool_call_reraises_graph_interrupt():
 
     with pytest.raises(GraphInterrupt):
         await middleware.awrap_tool_call(req, _interrupt)
+
+
+@pytest.mark.anyio
+async def test_awrap_tool_call_reraises_fatal_tool_execution_error():
+    middleware = ToolErrorHandlingMiddleware()
+    req = _request(name="read_file", tool_call_id="tc-fatal-async")
+
+    async def _boom(_req):
+        raise FatalToolExecutionError("sandbox provider mismatch")
+
+    with pytest.raises(FatalToolExecutionError, match="sandbox provider mismatch"):
+        await middleware.awrap_tool_call(req, _boom)

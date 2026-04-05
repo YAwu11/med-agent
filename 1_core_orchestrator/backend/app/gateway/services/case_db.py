@@ -327,7 +327,7 @@ def update_patient_info(thread_id: str, info_dict: dict) -> Case | None:
     """Update patient info on an existing Case. Returns None if no Case exists.
     
     [ADR-020] No longer auto-creates a Case. Case creation is exclusively
-    handled by the schedule_appointment tool when the patient confirms.
+    handled by the frontend appointment confirmation flow when the patient confirms.
     """
     target_case = get_case_by_thread(thread_id)
     
@@ -380,7 +380,7 @@ def update_patient_info_by_case(case_id: str, info_dict: dict) -> Case | None:
 def get_case_by_thread(thread_id: str) -> Case | None:
     """Find the active Case for a given patient thread_id.
     
-    Used by route guards and the schedule_appointment tool to check
+    Used by route guards and the appointment confirmation flow to check
     whether a formal Case already exists for this conversation thread.
     """
     with _lock:

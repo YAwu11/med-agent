@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import BackgroundTasks, UploadFile
 
 from app.gateway.routers import uploads
+from app.gateway.services.analyzer_registry import AnalysisResult
 
 
 def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_path):
@@ -77,6 +78,62 @@ def test_upload_files_syncs_non_local_sandbox_and_marks_markdown_file(tmp_path):
     sandbox.update_file.assert_any_call("/mnt/user-data/uploads/report.md", b"converted")
 
 
+def test_upload_files_publishes_received_and_analyzed_thread_events(tmp_path):
+    thread_uploads_dir = tmp_path / "uploads"
+    thread_uploads_dir.mkdir(parents=True)
+
+    provider = MagicMock()
+    provider.acquire.return_value = "local"
+    provider.get.return_value = MagicMock()
+
+    analysis_results = [
+        AnalysisResult(
+            filename="cbc.png",
+            category="lab_report",
+            confidence=0.98,
+            analyzer_name="paddle_ocr",
+            evidence_type="lab",
+            evidence_title="化验单: cbc.png",
+            ai_analysis_text="WBC 升高",
+        )
+    ]
+
+    with (
+        patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "ensure_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "get_sandbox_provider", return_value=provider),
+        patch.object(uploads, "get_app_config", return_value=type("Cfg", (), {"vision": {"enabled": True}})()),
+        patch.object(uploads, "analyze_batch", AsyncMock(return_value=analysis_results)),
+        patch.object(uploads, "_auto_sync_evidence", AsyncMock(return_value={"cbc.png": "ev-cbc"})),
+        patch.object(uploads, "publish_thread_event") as publish_thread_event,
+    ):
+        file = UploadFile(filename="cbc.png", file=BytesIO(b"image-bytes"))
+        result = asyncio.run(
+            uploads.upload_files("thread-analysis", BackgroundTasks(), files=[file])
+        )
+
+    assert result.success is True
+    assert publish_thread_event.call_count == 2
+
+    received_event = publish_thread_event.call_args_list[0].args[1]
+    analyzed_event = publish_thread_event.call_args_list[1].args[1]
+
+    assert publish_thread_event.call_args_list[0].args[0] == "thread-analysis"
+    assert received_event["type"] == "upload_received"
+    assert received_event["filename"] == "cbc.png"
+    assert received_event["status"] == "processing"
+    assert received_event["event_id"]
+
+    assert publish_thread_event.call_args_list[1].args[0] == "thread-analysis"
+    assert analyzed_event["type"] == "upload_analyzed"
+    assert analyzed_event["upload_id"] == "ev-cbc"
+    assert analyzed_event["filename"] == "cbc.png"
+    assert analyzed_event["analysis_kind"] == "ocr"
+    assert analyzed_event["status"] == "completed"
+    assert analyzed_event["category"] == "lab_report"
+    assert analyzed_event["summary"] == "WBC 升高"
+
+
 def test_upload_files_rejects_dotdot_and_dot_filenames(tmp_path):
     thread_uploads_dir = tmp_path / "uploads"
     thread_uploads_dir.mkdir(parents=True)
@@ -127,6 +184,28 @@ def test_delete_uploaded_file_removes_generated_markdown_companion(tmp_path):
     assert result == {"success": True, "message": "Deleted report.pdf"}
     assert not (thread_uploads_dir / "report.pdf").exists()
     assert not (thread_uploads_dir / "report.md").exists()
+
+
+def test_list_uploaded_files_hides_internal_analysis_sidecars(tmp_path):
+    thread_uploads_dir = tmp_path / "uploads"
+    thread_uploads_dir.mkdir(parents=True)
+
+    for filename in [
+        "cbc.png",
+        "cbc.png.ocr.md",
+        "cbc.qwen_cleaned.md",
+        "cbc.local_ocr.md",
+        "cbc.ocr_text.txt",
+        "cbc.raw_ocr.txt",
+        "cbc.meta.json",
+    ]:
+        (thread_uploads_dir / filename).write_text("stub", encoding="utf-8")
+
+    with patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir):
+        result = asyncio.run(uploads.list_uploaded_files("thread-sidecars"))
+
+    assert result["count"] == 1
+    assert [file_info["filename"] for file_info in result["files"]] == ["cbc.png"]
 
 
 def test_auto_sync_evidence_projects_brain_nifti_contract_fields():

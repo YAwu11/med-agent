@@ -31,6 +31,38 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp", ".gif", "
 DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xls", ".xlsx"}
 
 
+def _iter_snapshot_files(paths: Paths, thread_id: str):
+    intake_file = paths.sandbox_user_data_dir(thread_id) / "patient_intake.json"
+    if intake_file.exists():
+        yield intake_file
+
+    uploads_dir = paths.sandbox_uploads_dir(thread_id)
+    if uploads_dir.exists():
+        for upload_file in sorted(path for path in uploads_dir.iterdir() if _is_visible_upload(path)):
+            yield upload_file
+            meta_file = uploads_dir / f"{upload_file.name}.meta.json"
+            if meta_file.exists():
+                yield meta_file
+            ocr_file = uploads_dir / f"{upload_file.name}.ocr.md"
+            if ocr_file.exists():
+                yield ocr_file
+
+    reports_dir = paths.sandbox_user_data_dir(thread_id) / "imaging-reports"
+    if reports_dir.exists():
+        for report_file in sorted(reports_dir.glob("*.json")):
+            yield report_file
+
+
+def _compute_snapshot_revision(paths: Paths, thread_id: str) -> int:
+    revision = 0
+    for file_path in _iter_snapshot_files(paths, thread_id):
+        try:
+            revision = max(revision, file_path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return revision
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         if not path.exists():
@@ -80,6 +112,17 @@ def _summarize_markdown(text: str, *, max_lines: int = 4) -> tuple[str, str]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     title = _extract_markdown_title(lines, "化验单")
     return title, "\n".join(lines[:max_lines])
+
+
+def _normalize_delta_summary(summary: Any) -> str:
+    raw = _normalize_text(summary)
+    if not raw:
+        return ""
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    lines[0] = lines[0].lstrip("#").strip()
+    return "\n".join(lines).strip()
 
 
 def _summarize_findings(findings: Any) -> str:
@@ -150,7 +193,9 @@ def _map_report_status(raw_status: str | None) -> str:
 
 def _load_patient_info(paths: Paths, thread_id: str) -> dict[str, Any]:
     intake_file = paths.sandbox_user_data_dir(thread_id) / "patient_intake.json"
-    return _read_json(intake_file) or {}
+    patient_info = _read_json(intake_file) or {}
+    patient_info.pop("_field_meta", None)
+    return patient_info
 
 
 def _build_guidance(patient_info: dict[str, Any], uploaded_items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -285,12 +330,110 @@ def build_patient_record_snapshot(thread_id: str, *, paths: Paths | None = None)
     guidance = _build_guidance(patient_info, uploaded_items)
 
     return {
+        "kind": "patient_record_snapshot",
+        "revision": _compute_snapshot_revision(resolved_paths, thread_id),
         "thread_id": thread_id,
         "patient_info": patient_info,
         "evidence_items": evidence_items,
         "uploaded_items": uploaded_items,
         "guidance": guidance,
     }
+
+
+def build_patient_record_delta(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
+    previous = previous or {}
+    changes: list[dict[str, Any]] = []
+
+    previous_patient_info = previous.get("patient_info") or {}
+    current_patient_info = current.get("patient_info") or {}
+    for field in sorted(set(previous_patient_info) | set(current_patient_info)):
+        before_value = previous_patient_info.get(field)
+        after_value = current_patient_info.get(field)
+        if before_value == after_value:
+            continue
+        if not _has_value(before_value) and _has_value(after_value):
+            changes.append({"type": "patient_info_added", "field": field, "value": after_value})
+        elif _has_value(before_value) and not _has_value(after_value):
+            changes.append({"type": "patient_info_deleted", "field": field})
+        else:
+            changes.append({"type": "patient_info_updated", "field": field, "value": after_value})
+
+    previous_uploads = {
+        item["filename"]: item for item in (previous.get("uploaded_items") or []) if item.get("filename")
+    }
+    current_uploads = {
+        item["filename"]: item for item in (current.get("uploaded_items") or []) if item.get("filename")
+    }
+    for filename in sorted(set(previous_uploads) | set(current_uploads)):
+        before_item = previous_uploads.get(filename)
+        after_item = current_uploads.get(filename)
+        if before_item is None and after_item is not None:
+            changes.append(
+                {
+                    "type": "upload_added",
+                    "filename": filename,
+                    "category": _normalize_text(after_item.get("image_type")) or "unknown",
+                    "status": _normalize_text(after_item.get("status")) or "unknown",
+                }
+            )
+            continue
+        if before_item is not None and after_item is None:
+            changes.append({"type": "upload_removed", "filename": filename})
+            continue
+        if before_item is None or after_item is None:
+            continue
+
+        before_status = _normalize_text(before_item.get("status")) or "unknown"
+        after_status = _normalize_text(after_item.get("status")) or "unknown"
+        before_summary = _normalize_delta_summary(before_item.get("analysis_summary"))
+        after_summary = _normalize_delta_summary(after_item.get("analysis_summary"))
+        if before_status != after_status or before_summary != after_summary:
+            change: dict[str, Any] = {
+                "type": "upload_status_changed",
+                "filename": filename,
+                "from_status": before_status,
+                "to_status": after_status,
+            }
+            category = _normalize_text(after_item.get("image_type")) or _normalize_text(before_item.get("image_type"))
+            if category:
+                change["category"] = category
+            if after_summary:
+                change["summary"] = after_summary
+            changes.append(change)
+
+    return {
+        "kind": "patient_record_delta",
+        "revision": current.get("revision", 0),
+        "thread_id": current.get("thread_id"),
+        "changes": changes,
+    }
+
+
+def format_patient_record_delta_block(delta: dict[str, Any]) -> str:
+    changes = delta.get("changes") or []
+    if not changes:
+        return ""
+
+    lines = [f'<patient_record_delta revision="{delta.get("revision", 0)}">']
+    for change in changes:
+        change_type = change.get("type")
+        if change_type == "upload_added":
+            lines.append(
+                f'- 患者新增上传资料：{change.get("filename")}（{change.get("category") or "unknown"}），当前状态：{change.get("status") or "unknown"}。'
+            )
+        elif change_type == "upload_status_changed":
+            sentence = f'- {change.get("filename")} 状态从 {change.get("from_status")} 变为 {change.get("to_status")}。'
+            if _normalize_text(change.get("summary")):
+                sentence += f' 摘要：{change.get("summary")}'
+            lines.append(sentence)
+        elif change_type == "patient_info_added":
+            lines.append(f'- 患者新增了字段：{change.get("field")}。')
+        elif change_type == "patient_info_updated":
+            lines.append(f'- 患者更新了字段：{change.get("field")}。')
+        elif change_type == "patient_info_deleted":
+            lines.append(f'- 患者删除了字段：{change.get("field")}。')
+    lines.append("</patient_record_delta>")
+    return "\n".join(lines)
 
 
 def has_patient_record_content(snapshot: dict[str, Any]) -> bool:

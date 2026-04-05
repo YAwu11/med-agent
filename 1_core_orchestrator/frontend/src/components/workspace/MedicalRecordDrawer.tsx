@@ -1,7 +1,7 @@
 "use client";
 
-import { FileText, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { CheckCircle2, FileText, RefreshCw, Send } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import {
   Dialog,
@@ -10,53 +10,101 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { AppointmentPreviewData } from "@/components/workspace/AppointmentPreview";
 import { getBackendBaseURL } from "@/core/config";
+import type { PatientInfoSaveEvent } from "@/core/patient/patientInfoUpdates";
 import { cn } from "@/lib/utils";
 
-import { MedicalRecordCard, type MedicalRecordData } from "./MedicalRecordCard";
+import {
+  MedicalRecordCard,
+  type MedicalRecordDialogActions,
+} from "./MedicalRecordCard";
+import { useMedicalRecordResource } from "./use-medical-record-resource";
 
 interface MedicalRecordDialogProps {
   threadId: string;
   open: boolean;
   onClose: () => void;
+  onPatientInfoSaved?: (event: PatientInfoSaveEvent) => Promise<void> | void;
+  appointmentPreviewData?: AppointmentPreviewData | null;
+  onAppointmentConfirmed?: () => void;
+}
+
+interface AppointmentConfirmResponse {
+  success: boolean;
+  case_id: string;
+  short_id: string;
+  department?: string | null;
+  evidence_count: number;
+  message: string;
 }
 
 export function MedicalRecordDialog({
   threadId,
   open,
   onClose,
+  onPatientInfoSaved,
+  appointmentPreviewData,
+  onAppointmentConfirmed,
 }: MedicalRecordDialogProps) {
-  const [data, setData] = useState<MedicalRecordData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionBar, setActionBar] = useState<MedicalRecordDialogActions | null>(null);
+  const [isConfirmingAppointment, setIsConfirmingAppointment] = useState(false);
+  const [appointmentConfirmError, setAppointmentConfirmError] = useState<string | null>(null);
+  const [appointmentConfirmedMessage, setAppointmentConfirmedMessage] = useState<string | null>(null);
+  const {
+    data,
+    error,
+    isFetching,
+    isLoading,
+    refetch,
+  } = useMedicalRecordResource(threadId);
 
-  const fetchRecord = useCallback(async () => {
-    if (!threadId) return;
+  useEffect(() => {
+    setActionBar(null);
+    setIsConfirmingAppointment(false);
+    setAppointmentConfirmError(null);
+    setAppointmentConfirmedMessage(null);
+  }, [threadId]);
 
-    setLoading(true);
-    setError(null);
+  const handleConfirmAppointment = async () => {
+    if (!appointmentPreviewData) {
+      return;
+    }
+
+    setIsConfirmingAppointment(true);
+    setAppointmentConfirmError(null);
     try {
       const response = await fetch(
-        `${getBackendBaseURL()}/api/threads/${threadId}/medical-record`,
+        `${getBackendBaseURL()}/api/threads/${threadId}/confirm-appointment`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            patient_info:
+              actionBar?.currentPatientInfo ?? data?.patient_info ?? appointmentPreviewData.patient_info,
+            selected_evidence_ids: appointmentPreviewData.evidence_items.map((item) => item.id),
+            priority: appointmentPreviewData.suggested_priority,
+            department: appointmentPreviewData.suggested_department,
+            reason: appointmentPreviewData.reason,
+          }),
+        },
       );
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      const json = (await response.json()) as MedicalRecordData;
-      setData(json);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "加载失败";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [threadId]);
 
-  useEffect(() => {
-    if (open) {
-      void fetchRecord();
+      const result = (await response.json()) as AppointmentConfirmResponse;
+      setAppointmentConfirmedMessage(result.message);
+      onAppointmentConfirmed?.();
+    } catch (confirmError) {
+      setAppointmentConfirmError(
+        confirmError instanceof Error ? confirmError.message : "挂号提交失败",
+      );
+    } finally {
+      setIsConfirmingAppointment(false);
     }
-  }, [fetchRecord, open]);
+  };
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
@@ -75,29 +123,38 @@ export function MedicalRecordDialog({
                   </div>
                   <div>
                     <DialogTitle className="text-xl tracking-tight text-slate-950">
-                      我的病历页
+                      登记与挂号确认
                     </DialogTitle>
                     <DialogDescription
                       id="medical-record-dialog-description"
                       className="mt-1 text-sm leading-6 text-slate-600"
                     >
-                      这里会弹出完整病例页面。可以直接修改信息、查看上传原图，并在识别完成后核对摘要。
+                      在这里统一补齐登记信息、核对已归档资料，并在需要时直接完成挂号确认。
                     </DialogDescription>
-                    {data?.guidance ? (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <span
-                          className={cn(
-                            "rounded-full px-3 py-1 text-xs font-semibold",
-                            data.guidance.ready_for_ai_summary
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-amber-100 text-amber-700",
-                          )}
-                        >
-                          {data.guidance.ready_for_ai_summary ? "资料较完整" : "仍在补充中"}
-                        </span>
-                        <span className="text-xs leading-6 text-slate-500">
-                          {data.guidance.status_text}
-                        </span>
+                    {appointmentPreviewData ? (
+                      <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50/80 px-4 py-3">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-blue-800">
+                          <span>AI 已生成挂号预览</span>
+                          {appointmentPreviewData.suggested_department ? (
+                            <span className="rounded-full border border-blue-200 bg-white/80 px-2 py-0.5 text-xs font-medium text-blue-700">
+                              建议科室：{appointmentPreviewData.suggested_department}
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-blue-700/80">
+                          直接在这里核对患者信息后提交挂号；患者聊天区不再单独显示挂号预览卡片。
+                        </p>
+                        {appointmentConfirmedMessage ? (
+                          <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                            <CheckCircle2 className="size-4" />
+                            {appointmentConfirmedMessage}
+                          </div>
+                        ) : null}
+                        {appointmentConfirmError ? (
+                          <p className="mt-3 text-xs font-medium text-rose-600">
+                            {appointmentConfirmError}
+                          </p>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -105,20 +162,68 @@ export function MedicalRecordDialog({
               </div>
               <button
                 type="button"
-                onClick={() => void fetchRecord()}
-                disabled={loading}
+                onClick={() => void refetch()}
+                disabled={isFetching}
                 className="min-h-11 cursor-pointer rounded-full border border-cyan-200 bg-white/90 px-4 py-2 text-sm font-medium text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <span className="inline-flex items-center gap-2">
-                  <RefreshCw className={cn("size-4", loading && "animate-spin")} />
+                  <RefreshCw className={cn("size-4", isFetching && "animate-spin")} />
                   重新加载
                 </span>
               </button>
+              {actionBar ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={actionBar.onReset}
+                    disabled={!actionBar.isDirty || actionBar.isSaving}
+                    className="min-h-11 cursor-pointer rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    恢复未保存
+                  </button>
+                  <button
+                    type="button"
+                    onClick={actionBar.onRefreshUploads}
+                    disabled={actionBar.uploadsLoading}
+                    className="min-h-11 cursor-pointer rounded-full border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-medium text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <RefreshCw className={cn("size-4", actionBar.uploadsLoading && "animate-spin")} />
+                      刷新资料
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={actionBar.onSave}
+                    disabled={!actionBar.isDirty || actionBar.isSaving}
+                    className="min-h-11 cursor-pointer rounded-full bg-emerald-600 px-5 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(5,150,105,0.24)] transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                  >
+                    保存更改
+                  </button>
+                  {appointmentPreviewData && !appointmentConfirmedMessage ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleConfirmAppointment()}
+                      disabled={isConfirmingAppointment}
+                      className="min-h-11 cursor-pointer rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(37,99,235,0.26)] transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        {isConfirmingAppointment ? (
+                          <RefreshCw className="size-4 animate-spin" />
+                        ) : (
+                          <Send className="size-4" />
+                        )}
+                        {isConfirmingAppointment ? "提交中..." : "确认挂号"}
+                      </span>
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
             </div>
           </DialogHeader>
 
           <div className="max-h-[calc(92vh-112px)] overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
-            {loading && !data ? (
+            {isLoading && !data ? (
               <div className="flex min-h-60 items-center justify-center rounded-[28px] border border-dashed border-cyan-200 bg-white/70 text-sm text-slate-500">
                 <span className="inline-flex items-center gap-2">
                   <RefreshCw className="size-4 animate-spin" />
@@ -130,10 +235,10 @@ export function MedicalRecordDialog({
             {error ? (
               <div className="flex min-h-60 flex-col items-center justify-center rounded-[28px] border border-rose-200 bg-rose-50 px-6 text-center">
                 <p className="text-base font-semibold text-rose-700">病例页加载失败</p>
-                <p className="mt-2 text-sm leading-6 text-rose-600">{error}</p>
+                <p className="mt-2 text-sm leading-6 text-rose-600">{error.message}</p>
                 <button
                   type="button"
-                  onClick={() => void fetchRecord()}
+                  onClick={() => void refetch()}
                   className="mt-4 min-h-11 cursor-pointer rounded-full bg-rose-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-rose-700"
                 >
                   重试
@@ -141,13 +246,19 @@ export function MedicalRecordDialog({
               </div>
             ) : null}
 
-            {!loading && !error && data ? (
-              <MedicalRecordCard data={data} mode="dialog" onRefresh={fetchRecord} />
+            {!isLoading && !error && data ? (
+              <MedicalRecordCard
+                data={data}
+                mode="dialog"
+                onRefresh={() => refetch().then(() => undefined)}
+                onPatientInfoSaved={onPatientInfoSaved}
+                onActionBarChange={setActionBar}
+              />
             ) : null}
 
-            {!loading && !error && !data ? (
+            {!isLoading && !error && !data ? (
               <div className="flex min-h-60 items-center justify-center rounded-[28px] border border-dashed border-cyan-200 bg-white/70 px-6 text-center text-sm leading-6 text-slate-500">
-                当前还没有病历信息。先在聊天里告诉 AI 您的症状，或直接上传检查资料，病例页就会自动生成。
+                当前还没有登记信息。先告诉 AI 您的症状，或直接上传检查资料，登记页就会自动生成。
               </div>
             ) : null}
           </div>

@@ -53,9 +53,19 @@ The single LangGraph agent (`lead_agent`) is the runtime entry point, created vi
 - **Subagent delegation** for parallel task execution
 - **System prompt** with skills injection, memory context, and working directory guidance
 
+The default patient-facing runtime now uses a dedicated `patient_intake` profile:
+
+- forces non-thinking mode for lower latency
+- exposes only `update_patient_info`, `show_medical_record`, `read_patient_record`, `preview_appointment`, and `ask_clarification`
+- removes patient-side `rag_retrieve`, upload interpretation, and other broad tool surfaces from the default lead-agent path
+- keeps upload analysis on the backend side only; after appointment confirmation, pending historical uploads are attached to the created case so doctor-side workflows can continue from the same evidence set
+- reserves a `structured_data.triage` contract for future visual triage models, while patient-facing projections must stay limited to the reduced summary fields
+
 ### Middleware Chain
 
 Middlewares execute in strict order, each handling a specific concern:
+
+For the default `patient_intake` lead-agent profile, the runtime is intentionally reduced to `ThreadDataMiddleware`, `DanglingToolCallMiddleware`, `ToolErrorHandlingMiddleware`, and `ClarificationMiddleware`. The fuller chain below still describes the non-patient profiles and shared framework capabilities.
 
 | # | Middleware | Purpose |
 |---|-----------|---------|
@@ -119,6 +129,7 @@ FastAPI application providing REST endpoints for frontend integration:
 | `GET/PUT /api/mcp/config` | Manage MCP server configurations |
 | `GET/PUT /api/skills` | List and manage skills |
 | `POST /api/skills/install` | Install skill from `.skill` archive |
+| `GET/POST/PUT/DELETE /api/agents` | Manage custom agents using the shared deerflow agent-config loader |
 | `GET /api/memory` | Retrieve memory data |
 | `POST /api/memory/reload` | Force memory reload |
 | `GET /api/memory/config` | Memory configuration |
@@ -137,6 +148,10 @@ Lab-report OCR now prefers the local `PPStructureV3 -> Qwen` pipeline, but autom
 Run `python scripts/check_local_lab_ocr.py` inside `backend/` to see whether the current environment is in `local_ready` mode or `cloud_fallback` mode. To opt into the local `PPStructureV3` stack on Windows, run `powershell -ExecutionPolicy Bypass -File scripts/install_local_lab_ocr.ps1` from the repository root.
 
 Pydantic migration coverage also includes `tests/test_appointment_router.py`, which verifies the patient-intake patch model keeps `extra="allow"` behavior without emitting the Pydantic v1 class-config deprecation warning, and that confirmed OCR lab evidence is normalized to the case-domain `lab` / `patient_upload` vocabulary before persistence.
+
+Patient upload handoff coverage also includes `tests/test_patient_upload_handoff.py`, which verifies uploads that were still pending analysis before registration are attached to the case at confirmation time instead of being stranded in the thread sandbox.
+
+Structured visual triage contract coverage also includes `tests/test_triage_contract.py`, which verifies the placeholder backend contract exposes the full triage shape, keeps a reduced patient projection, and attaches `structured_data.triage` during shared parallel analysis without requiring a real triage model yet.
 
 Dependency hygiene coverage also includes `tests/test_dependency_warnings.py`, which verifies importing `requests` does not emit `RequestsDependencyWarning` from an incompatible transitive `chardet` version.
 

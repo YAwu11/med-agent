@@ -19,6 +19,7 @@ import {
 import { Task, TaskTrigger } from "@/components/ai-elements/task";
 import { Badge } from "@/components/ui/badge";
 import { type MedicalRecordData } from "@/components/workspace/MedicalRecordCard";
+import { getMessageAvatarMeta } from "@/components/workspace/messages/message-presentation";
 import { resolveArtifactURL } from "@/core/artifacts/utils";
 import { getBackendBaseURL } from "@/core/config";
 import { useI18n } from "@/core/i18n/hooks";
@@ -33,7 +34,6 @@ import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { humanMessagePlugins } from "@/core/streamdown";
 import { cn } from "@/lib/utils";
 
-import { AppointmentPreview } from "../AppointmentPreview";
 import { CopyButton } from "../copy-button";
 
 import { MarkdownContent } from "./markdown-content";
@@ -50,36 +50,69 @@ export function MessageListItem({
   threadId?: string;
 }) {
   const isHuman = message.type === "human";
+  const avatar = <MessageAvatar messageType={message.type} />;
+
   return (
-    <AIElementMessage
-      className={cn("group/conversation-message relative w-full", className)}
-      from={isHuman ? "user" : "assistant"}
-    >
-      <MessageContent
-        className={isHuman ? "w-fit" : "w-full"}
-        message={message}
-        isLoading={isLoading}
-        threadId={threadId}
-      />
-      {!isLoading && (
-        <MessageToolbar
-          className={cn(
-            isHuman ? "-bottom-9 justify-end" : "-bottom-8",
-            "absolute right-0 left-0 z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
-          )}
-        >
-          <div className="flex gap-1">
-            <CopyButton
-              clipboardData={
-                extractContentFromMessage(message) ??
-                extractReasoningContentFromMessage(message) ??
-                ""
-              }
-            />
-          </div>
-        </MessageToolbar>
+    <div
+      className={cn(
+        "flex w-full items-start gap-3",
+        isHuman ? "justify-end" : "justify-start",
       )}
-    </AIElementMessage>
+    >
+      {!isHuman && avatar}
+      <AIElementMessage
+        className={cn(
+          "group/conversation-message relative min-w-0",
+          isHuman ? "ml-auto w-fit max-w-[calc(100%-3.5rem)]" : "flex-1",
+          className,
+        )}
+        from={isHuman ? "user" : "assistant"}
+      >
+        <MessageContent
+          className={isHuman ? "w-fit" : "w-full"}
+          message={message}
+          isLoading={isLoading}
+          threadId={threadId}
+        />
+        {!isLoading && (
+          <MessageToolbar
+            className={cn(
+              isHuman ? "-bottom-9 justify-end" : "-bottom-8",
+              "absolute right-0 left-0 z-20 opacity-0 transition-opacity delay-200 duration-300 group-hover/conversation-message:opacity-100",
+            )}
+          >
+            <div className="flex gap-1">
+              <CopyButton
+                clipboardData={
+                  extractContentFromMessage(message) ??
+                  extractReasoningContentFromMessage(message) ??
+                  ""
+                }
+              />
+            </div>
+          </MessageToolbar>
+        )}
+      </AIElementMessage>
+      {isHuman && avatar}
+    </div>
+  );
+}
+function MessageAvatar({ messageType }: { messageType: Message["type"] }) {
+  const isHuman = messageType === "human";
+  const avatar = getMessageAvatarMeta(messageType);
+
+  return (
+    <div
+      aria-label={avatar.label}
+      className={cn(
+        "mt-1 flex size-9 shrink-0 items-center justify-center rounded-2xl border text-xs font-semibold shadow-sm",
+        isHuman
+          ? "border-slate-300 bg-slate-100 text-slate-700"
+          : "border-cyan-200 bg-cyan-50 text-cyan-700",
+      )}
+    >
+      <span aria-hidden>{avatar.fallback}</span>
+    </div>
   );
 }
 
@@ -134,6 +167,24 @@ function MedicalRecordNotice({ data }: { data: MedicalRecordData }) {
             <ArrowRight className="size-4" />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function RegistrationNotice() {
+  return (
+    <div className="overflow-hidden rounded-[28px] border border-blue-200 bg-[linear-gradient(135deg,rgba(239,246,255,0.96),rgba(248,250,252,0.98))] shadow-[0_16px_40px_rgba(37,99,235,0.12)]">
+      <div className="flex flex-col gap-3 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-950">挂号确认已同步到病历页</p>
+          <p className="mt-1 text-sm leading-6 text-slate-600">
+            请直接在病历页核对登记信息和挂号建议，不再单独展示聊天卡片。
+          </p>
+        </div>
+        <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">
+          病历页处理中
+        </span>
       </div>
     </div>
   );
@@ -324,7 +375,7 @@ function MessageContent_({
   if (appointmentPreviewData) {
     return (
       <AIElementMessageContent className={className}>
-        <AppointmentPreview data={appointmentPreviewData} />
+        <RegistrationNotice />
       </AIElementMessageContent>
     );
   }

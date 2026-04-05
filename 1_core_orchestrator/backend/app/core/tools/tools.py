@@ -9,12 +9,20 @@ from app.core.reflection import resolve_variable
 from app.core.tools.builtins import ask_clarification_tool, present_file_tool
 from app.core.tools.builtins.update_patient_info import update_patient_info_tool
 from app.core.tools.builtins.preview_appointment import preview_appointment_tool
-from app.core.tools.builtins.schedule_appointment import schedule_appointment_tool
 from app.core.tools.builtins.show_medical_record import show_medical_record_tool
+from app.core.tools.builtins.read_patient_record import read_patient_record_tool
 from app.core.tools.builtins.rag_retrieve import rag_retrieve_tool
 from app.core.tools.builtins.tool_search import reset_deferred_registry
 
 logger = logging.getLogger(__name__)
+
+PATIENT_INTAKE_BUILTIN_TOOLS = [
+    ask_clarification_tool,
+    update_patient_info_tool,
+    show_medical_record_tool,
+    read_patient_record_tool,
+    preview_appointment_tool,
+]
 
 BUILTIN_TOOLS = [
     present_file_tool,
@@ -24,7 +32,7 @@ BUILTIN_TOOLS = [
     update_patient_info_tool,       # 患者信息提取（仅写沙箱暂存）
     preview_appointment_tool,       # [ADR-021] 挂号预览（读沙箱 → 返回确认卡片数据）
     show_medical_record_tool,       # 病历单展示（读沙箱 → 返回病历卡片数据）
-    schedule_appointment_tool,      # [ADR-020] 挂号签发（降级兜底，前端渲染异常时使用）
+    read_patient_record_tool,       # 诊断前读取完整病例快照
     rag_retrieve_tool,              # [ADR-014] 知识库检索 (RAGFlow Lite)
 ]
 
@@ -38,6 +46,7 @@ def get_available_tools(
     include_mcp: bool = True,
     model_name: str | None = None,
     subagent_enabled: bool = False,
+    profile: str | None = None,
 ) -> list[BaseTool]:
     """Get all available tools from config.
 
@@ -54,6 +63,11 @@ def get_available_tools(
         List of available tools.
     """
     config = get_app_config()
+
+    if profile == "patient_intake":
+        logger.info("Using patient-intake tool profile with %s tools", len(PATIENT_INTAKE_BUILTIN_TOOLS))
+        return PATIENT_INTAKE_BUILTIN_TOOLS.copy()
+
     loaded_tools = [resolve_variable(tool.use, BaseTool) for tool in config.tools if groups is None or tool.group in groups]
 
     # Conditionally add tools based on config

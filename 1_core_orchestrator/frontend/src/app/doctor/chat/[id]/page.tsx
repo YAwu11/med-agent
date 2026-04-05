@@ -3,8 +3,8 @@
 import { ChevronLeft, ChevronRight, MessageSquare } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
-import { DoctorChatSidebar } from "@/components/doctor/DoctorChatSidebar";
 import { EvidenceDesk } from "@/components/doctor/EvidenceDesk";
+import { SynthesisPanel } from "@/components/doctor/SynthesisPanel";
 
 // ── 侧栏宽度约束 (px) ──────────────────────────────────
 const MIN_WIDTH = 280;       // 最窄可用宽度
@@ -18,7 +18,9 @@ export default function DoctorChatPage({ params }: { params: Promise<{ id: strin
   // ── 状态 ──────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<string>("vitals");
   const [isReviewPassed, setIsReviewPassed] = useState(false);
-  const [pendingDiagnosisMessage, setPendingDiagnosisMessage] = useState<string | null>(null);
+
+  // 综合诊断触发信号：每次递增来触发 SynthesisPanel 的 SSE 流
+  const [synthesisTrigger, setSynthesisTrigger] = useState(0);
 
   // 侧栏宽度 & 折叠状态
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH);
@@ -29,13 +31,12 @@ export default function DoctorChatPage({ params }: { params: Promise<{ id: strin
   const lastWidthRef = useRef(DEFAULT_WIDTH);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // ── 回调 ──────────────────────────────────────────────
-  const handleSynthesisDiagnosis = useCallback((summaryText: string) => {
-    setPendingDiagnosisMessage(summaryText);
-  }, []);
-
-  const handlePendingMessageConsumed = useCallback(() => {
-    setPendingDiagnosisMessage(null);
+  // ── 综合诊断回调 ──────────────────────────────────────
+  const handleSynthesisDiagnosis = useCallback(() => {
+    // 展开侧栏 + 触发 SSE 流
+    setIsCollapsed(false);
+    setSidebarWidth(lastWidthRef.current || DEFAULT_WIDTH);
+    setSynthesisTrigger((prev) => prev + 1);
   }, []);
 
   // ── 拖拽逻辑 ─────────────────────────────────────────
@@ -117,7 +118,6 @@ export default function DoctorChatPage({ params }: { params: Promise<{ id: strin
         />
       </div>
 
-      {/* ── 拖拽分隔条 ────────────────────────────────── */}
       {/* ── 拖拽分隔条（展开态才渲染） ─────────────── */}
       {!isCollapsed && (
         <div
@@ -145,14 +145,14 @@ export default function DoctorChatPage({ params }: { params: Promise<{ id: strin
                        flex items-center justify-center
                        opacity-0 group-hover:opacity-100 transition-all duration-200
                        hover:bg-blue-50 hover:border-blue-300 shadow-sm z-40"
-            title="收起 AI 对话"
+            title="收起 AI 诊断"
           >
             <ChevronRight className="h-3 w-3 text-slate-400 group-hover:text-blue-500" />
           </button>
         </div>
       )}
 
-      {/* ── 右侧 AI Chat Sidebar ─────────────────────── */}
+      {/* ── 右侧 AI 综合诊断面板 ─────────────────────── */}
       {isCollapsed ? (
         /* 折叠态：右侧边缘垂直居中的浮动展开按钮 */
         <button
@@ -164,22 +164,21 @@ export default function DoctorChatPage({ params }: { params: Promise<{ id: strin
                      hover:bg-blue-700 hover:shadow-blue-400/60 hover:pr-3
                      transition-all duration-300 ease-out
                      group cursor-pointer"
-          title="展开 AI 对话"
+          title="展开 AI 诊断"
         >
           <ChevronLeft className="h-5 w-5 transition-transform duration-300 group-hover:-translate-x-0.5" />
           <MessageSquare className="h-5 w-5" />
-          <span className="text-xs font-medium whitespace-nowrap">AI 对话</span>
+          <span className="text-xs font-medium whitespace-nowrap">AI 诊断</span>
         </button>
       ) : (
-        /* 展开态：正常渲染 DoctorChatSidebar */
+        /* 展开态：SynthesisPanel 替代原 DoctorChatSidebar */
         <div
           className="shrink-0 border-l border-slate-200 bg-white/50 relative flex flex-col shadow-[-4px_0_12px_rgba(0,0,0,0.02)] z-20"
           style={{ width: `${sidebarWidth}px` }}
         >
-          <DoctorChatSidebar
-            threadId={resolvedParams.id}
-            pendingMessage={pendingDiagnosisMessage}
-            onPendingMessageConsumed={handlePendingMessageConsumed}
+          <SynthesisPanel
+            caseId={resolvedParams.id}
+            triggerSignal={synthesisTrigger}
           />
         </div>
       )}

@@ -11,6 +11,7 @@ from deerflow.sandbox.exceptions import (
     SandboxNotFoundError,
     SandboxRuntimeError,
 )
+from deerflow.runtime_errors import FatalToolExecutionError
 from deerflow.sandbox.sandbox import Sandbox
 from deerflow.sandbox.sandbox_provider import get_sandbox_provider
 
@@ -118,6 +119,15 @@ def _sanitize_error(error: Exception, runtime: "ToolRuntime[ContextT, ThreadStat
         thread_data = get_thread_data(runtime)
         msg = mask_local_paths_in_output(msg, thread_data)
     return msg
+
+
+def _is_compatible_sandbox_error(error: Exception) -> bool:
+    sandbox_exception_names = {
+        "SandboxError",
+        "SandboxRuntimeError",
+        "SandboxNotFoundError",
+    }
+    return any(cls.__name__ in sandbox_exception_names for cls in type(error).__mro__)
 
 
 def replace_virtual_path(path: str, thread_data: ThreadDataState | None) -> str:
@@ -619,10 +629,10 @@ def read_file_tool(
         start_line: Optional starting line number (1-indexed, inclusive). Use with end_line to read a specific range.
         end_line: Optional ending line number (1-indexed, inclusive). Use with start_line to read a specific range.
     """
+    requested_path = path
     try:
         sandbox = ensure_sandbox_initialized(runtime)
         ensure_thread_directories_exist(runtime)
-        requested_path = path
         if is_local_sandbox(runtime):
             thread_data = get_thread_data(runtime)
             validate_local_tool_path(path, thread_data, read_only=True)
@@ -637,7 +647,9 @@ def read_file_tool(
             content = "\n".join(content.splitlines()[start_line - 1 : end_line])
         return content
     except SandboxError as e:
-        return f"Error: {e}"
+        raise FatalToolExecutionError(
+            f"Sandbox unavailable while reading file '{requested_path}': {e}"
+        ) from e
     except FileNotFoundError:
         return f"Error: File not found: {requested_path}"
     except PermissionError:
@@ -645,7 +657,13 @@ def read_file_tool(
     except IsADirectoryError:
         return f"Error: Path is a directory, not a file: {requested_path}"
     except Exception as e:
-        return f"Error: Unexpected error reading file: {_sanitize_error(e, runtime)}"
+        if _is_compatible_sandbox_error(e):
+            raise FatalToolExecutionError(
+                f"Sandbox unavailable while reading file '{requested_path}': {e}"
+            ) from e
+        raise FatalToolExecutionError(
+            f"Unexpected read_file failure for '{requested_path}': {_sanitize_error(e, runtime)}"
+        ) from e
 
 
 @tool("write_file", parse_docstring=True)

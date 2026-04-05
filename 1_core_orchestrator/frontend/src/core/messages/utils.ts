@@ -18,7 +18,7 @@ interface AssistantClarificationGroup extends GenericMessageGroup<"assistant:cla
 
 interface AssistantSubagentGroup extends GenericMessageGroup<"assistant:subagent"> {}
 
-type MessageGroup =
+export type MessageGroup =
   | HumanMessageGroup
   | AssistantProcessingGroup
   | AssistantMessageGroup
@@ -26,10 +26,25 @@ type MessageGroup =
   | AssistantClarificationGroup
   | AssistantSubagentGroup;
 
-export function groupMessages<T>(
-  messages: Message[],
-  mapper: (group: MessageGroup) => T,
-): T[] {
+function isHiddenContextMessage(message: Message) {
+  if (!message.additional_kwargs || typeof message.additional_kwargs !== "object") {
+    return false;
+  }
+  const contextEvent = Reflect.get(message.additional_kwargs, "context_event");
+  if (!contextEvent || typeof contextEvent !== "object") {
+    return false;
+  }
+  return (
+    Reflect.get(contextEvent, "hidden") === true ||
+    Reflect.get(contextEvent, "hidden_in_ui") === true
+  );
+}
+
+export function isAssistantMessageGroupType(type: string) {
+  return type.startsWith("assistant");
+}
+
+export function buildMessageGroups(messages: Message[]) {
   if (messages.length === 0) {
     return [];
   }
@@ -53,6 +68,10 @@ export function groupMessages<T>(
 
   for (const message of messages) {
     if (message.name === "todo_reminder") {
+      continue;
+    }
+
+    if (isHiddenContextMessage(message)) {
       continue;
     }
 
@@ -120,14 +139,22 @@ export function groupMessages<T>(
     }
   }
 
-  return groups
+  return groups;
+}
+
+export function groupMessages<T>(
+  messages: Message[],
+  mapper: (group: MessageGroup) => T,
+): T[] {
+  return buildMessageGroups(messages)
     .map(mapper)
     .filter((result) => result !== undefined && result !== null) as T[];
 }
 
 export function extractTextFromMessage(message: Message) {
   if (typeof message.content === "string") {
-    return splitInlineReasoningFromAIMessage(message)?.content ?? message.content.trim();
+    const content = splitInlineReasoningFromAIMessage(message)?.content ?? message.content.trim();
+    return message.type === "human" ? stripPatientRecordDeltaBlocks(content) : content;
   }
   if (Array.isArray(message.content)) {
     return message.content
@@ -139,6 +166,11 @@ export function extractTextFromMessage(message: Message) {
 }
 
 const THINK_TAG_RE = /<think>\s*([\s\S]*?)\s*<\/think>/g;
+const PATIENT_RECORD_DELTA_RE = /<patient_record_delta\b[^>]*>[\s\S]*?<\/patient_record_delta>/g;
+
+function stripPatientRecordDeltaBlocks(content: string) {
+  return content.replace(PATIENT_RECORD_DELTA_RE, "").trim();
+}
 
 function splitInlineReasoning(content: string) {
   const reasoningParts: string[] = [];
@@ -167,7 +199,8 @@ function splitInlineReasoningFromAIMessage(message: Message) {
 
 export function extractContentFromMessage(message: Message) {
   if (typeof message.content === "string") {
-    return splitInlineReasoningFromAIMessage(message)?.content ?? message.content.trim();
+    const content = splitInlineReasoningFromAIMessage(message)?.content ?? message.content.trim();
+    return message.type === "human" ? stripPatientRecordDeltaBlocks(content) : content;
   }
   if (Array.isArray(message.content)) {
     return message.content

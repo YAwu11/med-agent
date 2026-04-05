@@ -3,8 +3,8 @@
 [ADR-020] Delayed Registration Architecture:
 This tool ONLY writes AI analysis results to the sandbox disk as staging data.
 It does NOT create or modify any Case in the EMR database.
-Case creation happens exclusively via the schedule_appointment tool
-when the patient explicitly confirms they want to register for a consultation.
+Case creation happens exclusively when the patient explicitly confirms
+the appointment preview in the frontend registration flow.
 
 The doctor discovers and reviews results via GET /api/threads/{tid}/imaging-reports
 ONLY AFTER the patient has been formally registered (Case exists).
@@ -35,7 +35,7 @@ async def save_analysis_result_tool(
     Call this tool AFTER receiving results from the MCP analyze_xray tool.
     This tool writes the result to the sandbox staging area and returns
     IMMEDIATELY. The data will be formally registered into the EMR system
-    only when the patient confirms scheduling via schedule_appointment.
+    only when the patient confirms the appointment preview.
 
     Args:
         report_json: The raw JSON string from the MCP analyze_xray tool output.
@@ -83,7 +83,7 @@ async def save_analysis_result_tool(
     )
 
     # NOTE: No _sync_to_case_db() call here. Data stays in sandbox
-    # until patient explicitly confirms scheduling via schedule_appointment tool.
+    # until patient explicitly confirms the appointment preview in the UI.
 
     # Return the AI result immediately so the Agent can summarize for the patient
     return json.dumps({

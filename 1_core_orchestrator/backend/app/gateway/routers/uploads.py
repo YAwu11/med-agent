@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from loguru import logger
 import sys
 import uuid
@@ -27,9 +28,18 @@ from app.core.uploads.manager import (
 from app.core.utils.file_conversion import CONVERTIBLE_EXTENSIONS, convert_file_to_markdown
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.parallel_analyzer import analyze_batch
+from app.gateway.services.thread_events import publish_thread_event
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+INTERNAL_UPLOAD_SIDECAR_SUFFIXES = (
+    ".ocr.md",
+    ".meta.json",
+    ".local_ocr.md",
+    ".qwen_cleaned.md",
+    ".ocr_text.txt",
+    ".raw_ocr.txt",
+)
 
 # 文件类型 → Evidence 类型映射（非图像文件根据扩展名推断）
 _DOC_EXTS = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xls", ".xlsx"}
@@ -44,6 +54,73 @@ class UploadResponse(BaseModel):
     files: list[dict[str, str]]
     message: str
     task_ids: list[str] = []
+
+
+def _is_internal_upload_sidecar(filename: str, sibling_filenames: set[str]) -> bool:
+    lower_name = filename.lower()
+    if any(lower_name.endswith(suffix) for suffix in INTERNAL_UPLOAD_SIDECAR_SUFFIXES):
+        return True
+
+    if lower_name.endswith(".md"):
+        stem = Path(filename).stem
+        return any(
+            other != filename and Path(other).stem == stem and not other.lower().endswith(".md")
+            for other in sibling_filenames
+        )
+
+    return False
+
+
+def _analysis_kind(result: AnalysisResult) -> str:
+    if result.evidence_type == "lab" or result.category == "lab_report":
+        return "ocr"
+    if result.evidence_type == "imaging":
+        return "imaging"
+    return "description"
+
+
+def _publish_upload_analysis_events(
+    thread_id: str,
+    uploaded_files: list[dict[str, str]],
+    analysis_results: list[AnalysisResult],
+    evidence_mapping: dict[str, str],
+) -> None:
+    uploaded_filenames = {file_info.get("filename", "") for file_info in uploaded_files}
+
+    for result in analysis_results:
+        if result.filename not in uploaded_filenames:
+            continue
+
+        upload_id = evidence_mapping.get(result.filename) or result.filename
+        published_at = datetime.now(timezone.utc).isoformat()
+        status = "failed" if result.error else "completed"
+        publish_thread_event(
+            thread_id,
+            {
+                "type": "upload_analyzed",
+                "event_id": f"{upload_id}:{published_at}",
+                "upload_id": upload_id,
+                "filename": result.filename,
+                "analysis_kind": _analysis_kind(result),
+                "status": status,
+                "category": result.category,
+                "summary": result.ai_analysis_text or result.error or "",
+            },
+        )
+
+
+def _publish_upload_received_event(thread_id: str, filename: str) -> None:
+    published_at = datetime.now(timezone.utc).isoformat()
+    publish_thread_event(
+        thread_id,
+        {
+            "type": "upload_received",
+            "event_id": f"{filename}:received:{published_at}",
+            "upload_id": filename,
+            "filename": filename,
+            "status": "processing",
+        },
+    )
 
 
 def _is_nifti_file(filename: str) -> bool:
@@ -153,6 +230,9 @@ async def upload_files(
 
             logger.info(f"Saved file: {safe_filename} ({len(content)} bytes) to {file_info['path']}")
 
+            if Path(safe_filename).suffix.lower() in IMAGE_EXTS or _is_nifti_file(safe_filename):
+                _publish_upload_received_event(thread_id, safe_filename)
+
             file_ext = file_path.suffix.lower()
             if file_ext in CONVERTIBLE_EXTENSIONS:
                 md_path = await convert_file_to_markdown(file_path)
@@ -214,6 +294,9 @@ async def upload_files(
         evidence_mapping = await _auto_sync_evidence(thread_id, uploaded_files, analysis_results)
     except Exception as sync_err:
         logger.warning(f"[Gap①] Evidence auto-sync failed (non-blocking): {sync_err}")
+
+    if analysis_results:
+        _publish_upload_analysis_events(thread_id, uploaded_files, analysis_results, evidence_mapping)
 
     # -------- 异步队列调度 --------
     task_ids = []
@@ -378,10 +461,11 @@ async def list_uploaded_files(thread_id: str) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     result = list_files_in_dir(uploads_dir)
-    # 过滤 sidecar 文件，不向前端暴露
+    sibling_filenames = {file_info["filename"] for file_info in result["files"]}
     result["files"] = [
-        f for f in result["files"] 
-        if not f["filename"].endswith(".ocr.md") and not f["filename"].endswith(".meta.json")
+        f
+        for f in result["files"]
+        if not _is_internal_upload_sidecar(f["filename"], sibling_filenames)
     ]
     result["count"] = len(result["files"])
     enrich_file_listing(result, thread_id)
@@ -402,11 +486,8 @@ async def delete_uploaded_file(thread_id: str, filename: str) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
     try:
         result = delete_file_safe(uploads_dir, filename, convertible_extensions=CONVERTIBLE_EXTENSIONS)
-        # 清理 sidecar 文件（如果存在）
-        sidecar_ocr = uploads_dir / f"{filename}.ocr.md"
-        sidecar_ocr.unlink(missing_ok=True)
-        sidecar_meta = uploads_dir / f"{filename}.meta.json"
-        sidecar_meta.unlink(missing_ok=True)
+        for suffix in INTERNAL_UPLOAD_SIDECAR_SUFFIXES:
+            (uploads_dir / f"{filename}{suffix}").unlink(missing_ok=True)
         return result
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")

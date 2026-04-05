@@ -36,7 +36,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   type EvidenceItem,
   fetchCase,
-  fetchCaseSummary,
   fetchCaseSummaryReadiness,
   type CaseData,
   type CaseSummaryReadiness,
@@ -50,7 +49,7 @@ interface EvidenceDeskProps {
   isReviewPassed: boolean;
   onReviewPass: () => void;
   caseId?: string | null;
-  onSynthesisDiagnosis?: (summaryText: string) => void;
+  onSynthesisDiagnosis?: () => void;
 }
 
 interface EvidenceDeskTab {
@@ -265,7 +264,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   };
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
-  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const isSynthesizing = false;
   const [isDragging, setIsDragging] = useState(false);
 
   // ── P0: 诊断表单状态 ──────────────────────────────────
@@ -280,8 +279,8 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   });
   const [diagnosisSubmitted, setDiagnosisSubmitted] = useState(false);
 
-  // [Gap④] 综合诊断：拉取聚合摘要 → 注入 AI Chat
-  const handleSynthesisDiagnosis = async () => {
+  // 综合诊断：触发父组件启动 SSE 流（不再前端拉摘要）
+  const handleSynthesisDiagnosis = () => {
     if (!caseId || !onSynthesisDiagnosis) return;
 
     if (!summaryReadiness?.ready_for_synthesis) {
@@ -289,24 +288,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
       return;
     }
 
-    setIsSynthesizing(true);
-    try {
-      const data = await fetchCaseSummary(caseId);
-      
-      const prompt = `请基于以下患者完整病历资料进行综合诊断分析，给出你的诊断意见、鉴别诊断、建议的进一步检查项目和初步治疗方案。\n\n---\n\n${data.summary}`;
-      onSynthesisDiagnosis(prompt);
-    } catch (err) {
-      console.error("[Gap④] Failed to fetch case summary:", err);
-      toast.error(err instanceof Error ? err.message : "综合诊断摘要获取失败");
-      try {
-        const readiness = await fetchCaseSummaryReadiness(caseId);
-        setSummaryReadiness(readiness);
-      } catch (refreshErr) {
-        console.warn("[EvidenceDesk] Failed to refresh summary readiness:", refreshErr);
-      }
-    } finally {
-      setIsSynthesizing(false);
-    }
+    onSynthesisDiagnosis();
   };
 
   const uploadFiles = async (files: FileList | File[]) => {
@@ -1131,7 +1113,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                  <Button
                    size="lg"
                    onClick={() => {
-                     void handleSynthesisDiagnosis();
+                     handleSynthesisDiagnosis();
                    }}
                    disabled={isSynthesizing || !caseId || !summaryReadiness?.ready_for_synthesis}
                    className={cn(
