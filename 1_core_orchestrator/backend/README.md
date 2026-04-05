@@ -251,10 +251,11 @@ To verify the real `backend -> 8003 MCP service` path without any model weights,
 ```powershell
 $env:RUN_BRAIN_MCP_LIVE = "1"
 $env:PYTHONPATH = "."
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 .\.venv\Scripts\python.exe -m pytest tests/test_brain_mcp_live.py -v -s
 ```
 
-The test generates a synthetic `.nii.gz` volume, calls the live MCP service on `localhost:8003`, and accepts either full results or a mock-fallback payload as long as the response shape is valid.
+The test generates a synthetic `.nii.gz` volume, calls the live MCP service on `localhost:8003`, and accepts either full results or a mock-fallback payload as long as the response shape is valid. The extra `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` keeps third-party pytest plugins from interfering with this local-only smoke path.
 
 ---
 
