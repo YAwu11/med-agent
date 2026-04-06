@@ -22,6 +22,17 @@ from deerflow.models import create_chat_model
 
 logger = logging.getLogger(__name__)
 
+PATIENT_INTAKE_PROFILE = "patient_intake"
+
+
+def _resolve_lead_agent_profile(configurable: dict) -> str:
+    requested_profile = configurable.get("lead_agent_profile") or configurable.get("agent_profile")
+    if isinstance(requested_profile, str) and requested_profile.strip():
+        return requested_profile.strip()
+    if configurable.get("is_bootstrap", False):
+        return "bootstrap"
+    return PATIENT_INTAKE_PROFILE
+
 
 def _resolve_model_name(requested_model_name: str | None = None) -> str:
     """Resolve a runtime model name safely, falling back to default if invalid. Returns None if no models are configured."""
@@ -205,7 +216,12 @@ Being proactive with task management demonstrates thoroughness and ensures all r
 # ViewImageMiddleware should be before ClarificationMiddleware to inject image details before LLM
 # ToolErrorHandlingMiddleware should be before ClarificationMiddleware to convert tool exceptions to ToolMessages
 # ClarificationMiddleware should be last to intercept clarification requests after model calls
-def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_name: str | None = None):
+def _build_middlewares(
+    config: RunnableConfig,
+    model_name: str | None,
+    agent_name: str | None = None,
+    profile: str | None = None,
+):
     """Build middleware chain based on runtime configuration.
 
     Args:
@@ -215,7 +231,12 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     Returns:
         List of middleware instances.
     """
-    middlewares = build_lead_runtime_middlewares(lazy_init=True)
+    resolved_profile = profile or _resolve_lead_agent_profile(config.get("configurable", {}))
+    middlewares = build_lead_runtime_middlewares(lazy_init=True, profile=resolved_profile)
+
+    if resolved_profile == PATIENT_INTAKE_PROFILE:
+        middlewares.append(ClarificationMiddleware())
+        return middlewares
 
     # Add summarization middleware if enabled
     summarization_middleware = _create_summarization_middleware()
@@ -272,6 +293,9 @@ def make_lead_agent(config: RunnableConfig):
 
     cfg = config.get("configurable", {})
 
+    lead_agent_profile = _resolve_lead_agent_profile(cfg)
+    cfg["lead_agent_profile"] = lead_agent_profile
+
     thinking_enabled = cfg.get("thinking_enabled", True)
     reasoning_effort = cfg.get("reasoning_effort", None)
     requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
@@ -294,6 +318,11 @@ def make_lead_agent(config: RunnableConfig):
 
     if model_config is None:
         raise ValueError("No chat model could be resolved. Please configure at least one model in config.yaml or provide a valid 'model_name'/'model' in the request.")
+    if lead_agent_profile == PATIENT_INTAKE_PROFILE:
+        if thinking_enabled:
+            logger.info("Patient-intake profile forces non-thinking mode for lower latency.")
+        thinking_enabled = False
+        reasoning_effort = None
     if thinking_enabled and not model_config.supports_thinking:
         logger.warning(f"Thinking mode is enabled but model '{model_name}' does not support it; fallback to non-thinking mode.")
         thinking_enabled = False
@@ -316,6 +345,7 @@ def make_lead_agent(config: RunnableConfig):
     config["metadata"].update(
         {
             "agent_name": agent_name or "default",
+            "lead_agent_profile": lead_agent_profile,
             "model_name": model_name or "default",
             "thinking_enabled": thinking_enabled,
             "reasoning_effort": reasoning_effort,
@@ -328,17 +358,17 @@ def make_lead_agent(config: RunnableConfig):
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
         return create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, include_mcp=True) + [setup_agent],  # [Phase7] include_mcp=True: 主Agent直接调用MCP工具
+            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, include_mcp=True, profile=lead_agent_profile) + [setup_agent],  # [Phase7] include_mcp=True: 主Agent直接调用MCP工具
             middleware=_build_middlewares(config, model_name=model_name),
-            system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, available_skills=set(["bootstrap"])),
+            system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, available_skills=set(["bootstrap"]), profile=lead_agent_profile),
             state_schema=ThreadState,
         )
 
     # Default lead agent (unchanged behavior)
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
-        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, include_mcp=True),  # [Phase7] include_mcp=True: 主Agent直接调用MCP工具
+        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled, include_mcp=True, profile=lead_agent_profile),  # [Phase7] include_mcp=True: 主Agent直接调用MCP工具
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),
-        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name),
+        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name, profile=lead_agent_profile),
         state_schema=ThreadState,
     )

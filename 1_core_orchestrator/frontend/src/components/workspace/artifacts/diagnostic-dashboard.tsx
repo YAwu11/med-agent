@@ -7,19 +7,30 @@ import {
   ArtifactContent,
   ArtifactHeader,
   ArtifactTitle,
-  ArtifactActions,
-  ArtifactAction,
 } from "@/components/ai-elements/artifact";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import type { ImagingReport } from "@/core/imaging/api";
+import { cn } from "@/lib/utils";
+
+type SummaryFinding = {
+  confidence?: number;
+  disease?: string;
+  location?: string;
+  location_cn?: string;
+};
+
+type SummaryDoctorResult = {
+  conclusion?: "abnormal" | "normal" | "pending";
+  doctor_comment?: string;
+  findings?: SummaryFinding[];
+};
 
 export function DiagnosticDashboard({
   className,
-  threadId,
+  threadId: _threadId,
   pendingImaging,
   reviewedImaging,
-  onClose,
+  onClose: _onClose,
   onOpenImagingReview,
   onOpenImagingViewer,
   onGenerateGlobalDiagnosis,
@@ -46,10 +57,10 @@ export function DiagnosticDashboard({
     let summary = "";
     if (reviewedImaging.length > 0) {
       const latest = reviewedImaging[reviewedImaging.length - 1];
-      const docResult = latest?.doctor_result || {};
-      const findings = docResult.findings || [];
+      const docResult: SummaryDoctorResult = latest?.doctor_result ?? {};
+      const findings = docResult.findings ?? [];
       const summaryParts = findings.map(
-        (f: any) => `${f.disease}(${f.confidence !== undefined ? (f.confidence * 100).toFixed(0) + "%" : "极大概率"}, ${f.location_cn || f.location || "未知"})`
+        (f) => `${f.disease ?? "未知病灶"}(${f.confidence !== undefined ? (f.confidence * 100).toFixed(0) + "%" : "极大概率"}, ${f.location_cn ?? f.location ?? "未知"})`
       );
       summary += `【影像学所见】:\n检出 ${findings.length} 个病灶: ${summaryParts.join("、")}。\n`;
       summary += `医生评估: ${docResult.conclusion === "normal" ? "正常" : docResult.conclusion === "abnormal" ? "异常" : "待定"}。\n`;

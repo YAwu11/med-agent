@@ -13,9 +13,15 @@ import os
 import aiohttp
 from langchain.tools import tool
 
+from deerflow.runtime_errors import FatalToolExecutionError
+
 logger = logging.getLogger(__name__)
 
 RAGFLOW_URL = os.getenv("RAGFLOW_URL", "http://127.0.0.1:9380")
+
+
+def _raise_fatal_rag_error(message: str) -> None:
+    raise FatalToolExecutionError(message)
 
 
 @tool("rag_retrieve", parse_docstring=True)
@@ -64,7 +70,10 @@ async def rag_retrieve_tool(
                 if resp.status != 200:
                     text = await resp.text()
                     logger.error(f"rag_retrieve HTTP {resp.status}: {text[:200]}")
-                    return f"知识库检索服务返回错误 ({resp.status})，请检查 RAGFlow Lite 是否正常运行。"
+                    _raise_fatal_rag_error(
+                        f"知识库检索服务不可用，RAGFlow Lite 返回 HTTP {resp.status}。"
+                        f" 请检查 {RAGFLOW_URL} 是否可访问，并确认 9380 端口服务已启动。"
+                    )
 
                 data = await resp.json()
 
@@ -86,10 +95,16 @@ async def rag_retrieve_tool(
 
     except TimeoutError:
         logger.warning(f"rag_retrieve timeout connecting to {RAGFLOW_URL}")
-        return "知识库检索服务响应超时，请稍后重试。您可以尝试使用网络搜索工具获取信息。"
+        _raise_fatal_rag_error(
+            f"知识库检索服务响应超时。请检查 {RAGFLOW_URL} 是否健康，并确认本地 RAG 服务没有卡死。"
+        )
     except aiohttp.ClientError as e:
         logger.error(f"rag_retrieve connection error: {e}")
-        return f"知识库检索服务连接失败，请确认 RAGFlow Lite 是否已启动。"
+        _raise_fatal_rag_error(
+            f"知识库检索服务连接失败：{e}。请确认 RAGFlow Lite 已启动，并监听 {RAGFLOW_URL}。"
+        )
     except Exception as e:
         logger.error(f"rag_retrieve unexpected error: {e}", exc_info=True)
-        return f"知识库检索失败: {str(e)}。您可以尝试使用网络搜索工具获取信息。"
+        _raise_fatal_rag_error(
+            f"知识库检索发生内部错误：{e}。当前运行已中断，请先修复 RAG 服务后再重试。"
+        )

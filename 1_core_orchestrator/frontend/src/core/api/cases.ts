@@ -76,6 +76,26 @@ export interface CaseListResponse {
   counts: CaseCounts;
 }
 
+export interface CaseSummaryReadiness {
+  case_id: string;
+  ready_for_synthesis: boolean;
+  stage: "collecting_info" | "processing_uploads" | "review_failed_uploads" | "ready";
+  status_text: string;
+  next_action: string;
+  blocking_reasons: string[];
+  missing_required_fields: string[];
+  pending_files: string[];
+  failed_files: string[];
+}
+
+export interface CaseSummaryResponse {
+  case_id: string;
+  summary: string;
+  evidence_count: number;
+  has_diagnosis: boolean;
+  summary_readiness: Omit<CaseSummaryReadiness, "case_id">;
+}
+
 // ── API Functions ──────────────────────────────────────────
 
 const BASE = () => `${getBackendBaseURL()}/api`;
@@ -169,6 +189,37 @@ export async function createCase(data: {
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error(`Failed to create case: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchCaseSummaryReadiness(
+  caseId: string,
+): Promise<CaseSummaryReadiness> {
+  const res = await fetch(`${BASE()}/cases/${caseId}/summary-readiness`);
+  if (!res.ok) throw new Error(`Failed to fetch case summary readiness: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchCaseSummary(
+  caseId: string,
+): Promise<CaseSummaryResponse> {
+  const res = await fetch(`${BASE()}/cases/${caseId}/summary`);
+
+  if (!res.ok) {
+    let detail: string | undefined;
+    try {
+      const error = (await res.json()) as { detail?: { message?: string } | string };
+      if (typeof error.detail === "string") {
+        detail = error.detail;
+      } else {
+        detail = error.detail?.message;
+      }
+    } catch {
+      detail = undefined;
+    }
+    throw new Error(detail ?? `Failed to fetch case summary: ${res.status}`);
+  }
+
   return res.json();
 }
 

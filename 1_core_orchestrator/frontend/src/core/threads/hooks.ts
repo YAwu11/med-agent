@@ -21,6 +21,17 @@ import type { AgentThread, AgentThreadState } from "./types";
 export type ToolEndEvent = {
   name: string;
   data: unknown;
+  runId?: string;
+};
+
+export type ToolStartEvent = {
+  name: string;
+  runId?: string;
+};
+
+export type RunCreatedEvent = {
+  threadId: string;
+  runId?: string;
 };
 
 export type ThreadStreamOptions = {
@@ -28,8 +39,15 @@ export type ThreadStreamOptions = {
   context: LocalSettings["context"];
   isMock?: boolean;
   onStart?: (threadId: string) => void;
+  onRunCreated?: (event: RunCreatedEvent) => void;
   onFinish?: (state: AgentThreadState) => void;
+  onToolStart?: (event: ToolStartEvent) => void;
   onToolEnd?: (event: ToolEndEvent) => void;
+};
+
+export type SendMessageOptions = {
+  hidden?: boolean;
+  additionalKwargs?: Record<string, unknown>;
 };
 
 function getStreamErrorMessage(error: unknown): string {
@@ -60,10 +78,13 @@ export function useThreadStream({
   context,
   isMock,
   onStart,
+  onRunCreated,
   onFinish,
+  onToolStart,
   onToolEnd,
 }: ThreadStreamOptions) {
   const { t } = useI18n();
+  const apiClient = getAPIClient(isMock);
   // Track the thread ID that is currently streaming to handle thread changes during streaming
   const [onStreamThreadId, setOnStreamThreadId] = useState(() => threadId);
   // Ref to track current thread ID across async callbacks without causing re-renders,
@@ -73,14 +94,16 @@ export function useThreadStream({
 
   const listeners = useRef({
     onStart,
+    onRunCreated,
     onFinish,
+    onToolStart,
     onToolEnd,
   });
 
   // Keep listeners ref updated with latest callbacks
   useEffect(() => {
-    listeners.current = { onStart, onFinish, onToolEnd };
-  }, [onStart, onFinish, onToolEnd]);
+    listeners.current = { onStart, onRunCreated, onFinish, onToolStart, onToolEnd };
+  }, [onStart, onRunCreated, onFinish, onToolStart, onToolEnd]);
 
   useEffect(() => {
     const normalizedThreadId = threadId ?? null;
@@ -111,20 +134,31 @@ export function useThreadStream({
   const updateSubtask = useUpdateSubtask();
 
   const thread = useStream<AgentThreadState>({
-    client: getAPIClient(isMock),
+    client: apiClient,
     assistantId: "lead_agent",
     threadId: onStreamThreadId,
     reconnectOnMount: true,
     fetchStateHistory: { limit: 1 },
     onCreated(meta) {
+      listeners.current.onRunCreated?.({
+        threadId: meta.thread_id,
+        runId: typeof meta.run_id === "string" ? meta.run_id : undefined,
+      });
       handleStreamStart(meta.thread_id);
       setOnStreamThreadId(meta.thread_id);
     },
     onLangChainEvent(event) {
+      if (event.event === "on_tool_start") {
+        listeners.current.onToolStart?.({
+          name: event.name,
+          runId: typeof event.run_id === "string" ? event.run_id : undefined,
+        });
+      }
       if (event.event === "on_tool_end") {
         listeners.current.onToolEnd?.({
           name: event.name,
           data: event.data,
+          runId: typeof event.run_id === "string" ? event.run_id : undefined,
         });
       }
     },
@@ -185,9 +219,48 @@ export function useThreadStream({
   // Optimistic messages shown before the server stream responds
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const sendInFlightRef = useRef(false);
   // Track message count before sending so we know when server has responded
   const prevMsgCountRef = useRef(thread.messages.length);
+
+  const getActiveRunId = useCallback((activeThreadId: string | null | undefined) => {
+    if (typeof window === "undefined" || !activeThreadId) {
+      return null;
+    }
+    return window.localStorage.getItem(`lg:stream:${activeThreadId}`);
+  }, []);
+
+  const clearActiveRunId = useCallback((activeThreadId: string | null | undefined) => {
+    if (typeof window === "undefined" || !activeThreadId) {
+      return;
+    }
+    window.localStorage.removeItem(`lg:stream:${activeThreadId}`);
+  }, []);
+
+  const stopActiveRun = useCallback(async () => {
+    const activeThreadId = threadIdRef.current;
+    const activeRunId = getActiveRunId(activeThreadId);
+
+    if (activeRunId) {
+      setIsCancelling(true);
+    }
+
+    try {
+      await thread.stop();
+
+      if (activeThreadId && activeRunId) {
+        try {
+          await apiClient.runs.cancel(activeThreadId, activeRunId, true, "interrupt");
+        } catch (error) {
+          console.warn("Failed to confirm run cancellation", error);
+        }
+      }
+    } finally {
+      clearActiveRunId(activeThreadId);
+      setIsCancelling(false);
+    }
+  }, [apiClient, clearActiveRunId, getActiveRunId, thread]);
 
   // Clear optimistic when server messages arrive (count increases)
   useEffect(() => {
@@ -204,6 +277,7 @@ export function useThreadStream({
       threadId: string,
       message: PromptInputMessage,
       extraContext?: Record<string, unknown>,
+      options?: SendMessageOptions,
     ) => {
       if (sendInFlightRef.current) {
         return;
@@ -211,6 +285,7 @@ export function useThreadStream({
       sendInFlightRef.current = true;
 
       const text = message.text.trim();
+      const isHidden = options?.hidden === true;
 
       // Capture current count before showing optimistic messages
       prevMsgCountRef.current = thread.messages.length;
@@ -225,25 +300,27 @@ export function useThreadStream({
       );
 
       // Create optimistic human message (shown immediately)
-      const optimisticHumanMsg: Message = {
-        type: "human",
-        id: `opt-human-${Date.now()}`,
-        content: text ? [{ type: "text", text }] : "",
-        additional_kwargs:
-          optimisticFiles.length > 0 ? { files: optimisticFiles } : {},
-      };
+      if (!isHidden) {
+        const optimisticHumanMsg: Message = {
+          type: "human",
+          id: `opt-human-${Date.now()}`,
+          content: text ? [{ type: "text", text }] : "",
+          additional_kwargs:
+            optimisticFiles.length > 0 ? { files: optimisticFiles } : {},
+        };
 
-      const newOptimistic: Message[] = [optimisticHumanMsg];
-      if (optimisticFiles.length > 0) {
-        // Mock AI message while files are being uploaded
-        newOptimistic.push({
-          type: "ai",
-          id: `opt-ai-${Date.now()}`,
-          content: t.uploads.uploadingFiles,
-          additional_kwargs: { element: "task" },
-        });
+        const newOptimistic: Message[] = [optimisticHumanMsg];
+        if (optimisticFiles.length > 0) {
+          // Mock AI message while files are being uploaded
+          newOptimistic.push({
+            type: "ai",
+            id: `opt-ai-${Date.now()}`,
+            content: t.uploads.uploadingFiles,
+            additional_kwargs: { element: "task" },
+          });
+        }
+        setOptimisticMessages(newOptimistic);
       }
-      setOptimisticMessages(newOptimistic);
 
       _handleOnStart(threadId);
 
@@ -304,6 +381,7 @@ export function useThreadStream({
                   size: info.size,
                   path: info.artifact_url,
                   status: "uploaded" as const,
+                  ai_analysis_text: info.ai_analysis_text,
                 }),
               );
               setOptimisticMessages((messages) => {
@@ -341,8 +419,13 @@ export function useThreadStream({
             size: info.size,
             path: info.virtual_path,
             status: "uploaded" as const,
+            ai_analysis_text: info.ai_analysis_text,
           }),
         );
+        const mergedAdditionalKwargs = {
+          ...(filesForSubmit.length > 0 ? { files: filesForSubmit } : {}),
+          ...(options?.additionalKwargs ?? {}),
+        };
 
         await thread.submit(
           {
@@ -355,8 +438,7 @@ export function useThreadStream({
                     text,
                   },
                 ],
-                additional_kwargs:
-                  filesForSubmit.length > 0 ? { files: filesForSubmit } : {},
+                additional_kwargs: mergedAdditionalKwargs,
               },
             ],
           },
@@ -399,13 +481,19 @@ export function useThreadStream({
   );
 
   // Merge thread with optimistic messages for display
-  const mergedThread =
+  const displayThread =
     optimisticMessages.length > 0
       ? ({
           ...thread,
           messages: [...thread.messages, ...optimisticMessages],
         } as typeof thread)
       : thread;
+
+  const mergedThread = {
+    ...displayThread,
+    isLoading: displayThread.isLoading || isCancelling,
+    stop: stopActiveRun,
+  } as typeof thread;
 
   return [mergedThread, sendMessage, isUploading] as const;
 }

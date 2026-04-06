@@ -7,18 +7,16 @@ Knowledge Proxy — Gateway 反向代理，透明转发至 RAGFlow Lite
 NOTE: 使用 aiohttp 替代 httpx，因为 httpx 0.28+ 的连接管理在 Windows 上
       与 uvicorn --reload 模式的 reloader 进程存在兼容性问题，会收到空 502。
 """
-import logging
+from loguru import logger
 import os
 
 import aiohttp
 from fastapi import APIRouter, Request, HTTPException, Response
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 RAGFLOW_PROXY_URL = os.getenv("RAGFLOW_URL", "http://127.0.0.1:9380")
-
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_ragflow(request: Request, path: str):

@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -9,27 +9,28 @@ from app.gateway.routers import (
     appointment,
     artifacts,
     cases,
+    doctor_synthesis,
     imaging_reports,
     mcp,
     models,
     settings_api,
     skills,
     suggestions,
+    thread_events,
     threads,
     uploads,
     knowledge_proxy,
+    brain_report,
+    tasks,
 )
 from app.core.config.app_config import get_app_config
+from app.core.logging.logger import setup_logging
+from app.gateway.middlewares.logging_middleware import loguru_requests_middleware
+from loguru import logger
+from asgi_correlation_id import CorrelationIdMiddleware
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
-logger = logging.getLogger(__name__)
-
+setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -82,7 +83,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
     logger.info("Shutting down API Gateway")
-
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
@@ -166,6 +166,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
     )
 
     # CORS is handled by nginx - no need for FastAPI middleware
+    
+    app.add_middleware(CorrelationIdMiddleware)
+    app.middleware("http")(loguru_requests_middleware)
 
     # Include routers
     # Models API is mounted at /api/models
@@ -179,12 +182,16 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
     app.include_router(artifacts.router)
     app.include_router(uploads.router)
     app.include_router(threads.router)
+    app.include_router(thread_events.router)
     app.include_router(suggestions.router)
     app.include_router(cases.router)
+    app.include_router(doctor_synthesis.router)
     app.include_router(imaging_reports.router)
     app.include_router(settings_api.router)
     app.include_router(knowledge_proxy.router)
     app.include_router(appointment.router)
+    app.include_router(brain_report.router)
+    app.include_router(tasks.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:
@@ -196,7 +203,6 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
         return {"status": "healthy", "service": "deer-flow-gateway"}
 
     return app
-
 
 # Create app instance for uvicorn
 app = create_app()

@@ -26,6 +26,10 @@ cp .env.example .env
 # Edit .env with your configuration
 ```
 
+For local production-style verification, keep `BETTER_AUTH_SECRET` set in `.env`.
+`src/env.js` validates this variable when `NODE_ENV=production`, so `pnpm build`
+will fail if it is missing.
+
 ### Development
 
 ```bash
@@ -51,9 +55,75 @@ pnpm build
 pnpm start
 ```
 
+### Testing
+
+```bash
+# Run the frontend test suite
+pnpm test
+
+# Run the browser-level doctor imaging regression
+pnpm test:e2e -- doctor-imaging-review
+
+# Watch mode during component work
+pnpm test:watch
+
+# Focused regression for doctor-side imaging review
+pnpm test -- ImagingViewer
+```
+
+The current frontend test baseline uses Vitest + Testing Library in jsdom plus a narrow Playwright browser regression. The locked doctor-side coverage now lives in `src/components/doctor/__tests__/ImagingViewer.test.tsx` and `tests/e2e/doctor-imaging-review.spec.ts`, with the latter mounted through `src/app/mock/doctor-imaging-review/page.tsx`. Together they cover structured summary/probability rendering, the `{ doctor_result: ... }` save contract, and missing-finding-id normalization in both component and browser contexts.
+
+GitHub Actions automation for these checks lives in `.github/workflows/doctor-imaging-ci.yml` and runs the frontend static checks, Vitest suite, and Playwright doctor-imaging regression on pull requests and pushes that touch the frontend/backend subtrees.
+
+Minimal local build notes:
+
+- `BETTER_AUTH_SECRET` is required for `pnpm build`; use any 32+ character placeholder locally and a real random secret in shared or production environments.
+- `BETTER_AUTH_URL` is optional for the build itself, but setting it avoids Better Auth base URL warnings during local production builds.
+- Better Auth's warning text may mention `BETTER_AUTH_BASE_URL`, but this frontend resolves the base URL from `BETTER_AUTH_URL` unless you wire `baseURL` directly in code.
+- `SKIP_ENV_VALIDATION=1` remains available for Docker or CI escape hatches, but local verification should prefer real env values.
+
+### Startup Validation
+
+Use the following checklist after auth-adjacent or environment-sensitive frontend changes:
+
+```bash
+# 1. Prepare local env
+cp .env.example .env
+```
+
+Ensure `.env` contains at least:
+
+```dotenv
+BETTER_AUTH_SECRET="local-build-placeholder-secret-32chars"
+# Optional but recommended to silence Better Auth base URL warnings
+BETTER_AUTH_URL="http://localhost:3000"
+```
+
+Then run the checks:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm build
+pnpm start
+```
+
+One-off PowerShell build verification without editing `.env`:
+
+```powershell
+$env:BETTER_AUTH_SECRET = "local-build-placeholder-secret-32chars"
+pnpm build
+```
+
+Startup notes:
+
+- Leave `NEXT_PUBLIC_BACKEND_BASE_URL` and `NEXT_PUBLIC_LANGGRAPH_BASE_URL` unset if you want the default nginx/proxy behavior.
+- `pnpm start` serves the production build on `http://localhost:3000`.
+- Reserve `SKIP_ENV_VALIDATION=1` for Docker or CI escape hatches; do not use it for routine local verification.
+
 ## Site Map
 
-```
+```text
 ├── /                    # Landing page
 ├── /chats               # Chat list
 ├── /chats/new           # New chat page
@@ -71,11 +141,18 @@ Key environment variables (see `.env.example` for full list):
 NEXT_PUBLIC_BACKEND_BASE_URL="http://localhost:8001"
 # LangGraph API URLs (optional, uses nginx proxy by default)
 NEXT_PUBLIC_LANGGRAPH_BASE_URL="http://localhost:2024"
+
+# Required for production-mode builds
+BETTER_AUTH_SECRET="change-me-32-characters-minimum-secret"
+
+# Optional, removes Better Auth base URL warning during local production builds
+# Better Auth may log the phrase `BETTER_AUTH_BASE_URL`, but this app resolves from BETTER_AUTH_URL.
+# BETTER_AUTH_URL="http://localhost:3000"
 ```
 
 ## Project Structure
 
-```
+```text
 src/
 ├── app/                    # Next.js App Router pages
 │   ├── api/                # API routes
@@ -83,6 +160,7 @@ src/
 │   └── mock/               # Mock/demo pages
 ├── components/             # React components
 │   ├── ui/                 # Reusable UI components
+│   ├── doctor/             # Doctor review panels (EvidenceDesk, imaging, OCR, lab viewers)
 │   ├── workspace/          # Workspace-specific components
 │   ├── landing/            # Landing page components
 │   └── ai-elements/        # AI-related UI elements
@@ -109,12 +187,15 @@ src/
 ## Scripts
 
 | Command | Description |
-|---------|-------------|
+| ------- | ----------- |
 | `pnpm dev` | Start development server with Turbopack |
 | `pnpm build` | Build for production |
 | `pnpm start` | Start production server |
 | `pnpm lint` | Run ESLint |
 | `pnpm lint:fix` | Fix ESLint issues |
+| `pnpm test` | Run Vitest once |
+| `pnpm test:e2e` | Run Playwright browser regressions |
+| `pnpm test:watch` | Run Vitest in watch mode |
 | `pnpm typecheck` | Run TypeScript type checking |
 | `pnpm check` | Run both lint and typecheck |
 
@@ -123,6 +204,9 @@ src/
 - Uses pnpm workspaces (see `packageManager` in package.json)
 - Turbopack enabled by default in development for faster builds
 - Environment validation can be skipped with `SKIP_ENV_VALIDATION=1` (useful for Docker)
+- Use `pnpm test -- ImagingViewer` for the focused doctor-side imaging regression before broader lint/typecheck runs.
+- Use `pnpm test:e2e -- doctor-imaging-review` when touching browser-visible doctor imaging review behavior.
+- For focused doctor-review refactors, prefer isolated verification such as `pnpm exec eslint "src/components/doctor/**/*.tsx"` alongside `pnpm typecheck`.
 - Backend API URLs are optional; nginx proxy is used by default in development
 
 ## License

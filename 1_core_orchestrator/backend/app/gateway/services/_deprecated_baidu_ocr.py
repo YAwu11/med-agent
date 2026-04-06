@@ -10,14 +10,13 @@
 """
 
 import base64
-import logging
+from loguru import logger
 import os
 import time
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-logger = logging.getLogger(__name__)
 
 _token_cache: dict = {"token": None, "expires_at": 0}
 
@@ -25,7 +24,6 @@ BAIDU_TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
 BAIDU_OCR_URL = (
     "https://aip.baidubce.com/rest/2.0/ocr/v1/medical_report_detection"
 )
-
 
 async def _get_access_token() -> str:
     """获取百度 Access Token（带内存缓存）"""
@@ -59,7 +57,6 @@ async def _get_access_token() -> str:
     )
     logger.info("百度 OCR Access Token 已刷新")
     return _token_cache["token"]
-
 
 @retry(
     stop=stop_after_attempt(2),

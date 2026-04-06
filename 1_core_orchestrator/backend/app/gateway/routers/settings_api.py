@@ -10,14 +10,13 @@ Provides:
 from __future__ import annotations
 
 import json
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/doctor", tags=["settings"])
 
@@ -43,7 +42,6 @@ _DEFAULTS: dict[str, Any] = {
     "display_default_tab": "evidence",
 }
 
-
 def _load() -> dict[str, Any]:
     if _SETTINGS_FILE.exists():
         try:
@@ -52,22 +50,18 @@ def _load() -> dict[str, Any]:
             pass
     return dict(_DEFAULTS)
 
-
 def _save(data: dict[str, Any]):
     _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
     _SETTINGS_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-
 class SettingsUpdate(BaseModel):
     settings: dict[str, Any]
-
 
 @router.get("/settings")
 async def get_settings():
     return {"settings": _load()}
-
 
 @router.put("/settings")
 async def update_settings(req: SettingsUpdate):
@@ -76,7 +70,6 @@ async def update_settings(req: SettingsUpdate):
     _save(current)
     logger.info("Doctor settings saved")
     return {"settings": current, "status": "saved"}
-
 
 @router.delete("/settings")
 async def reset_settings():

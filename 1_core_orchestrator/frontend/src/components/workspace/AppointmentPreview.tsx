@@ -1,7 +1,5 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
-import Link from "next/link";
 import {
   CheckCircle2,
   AlertCircle,
@@ -12,8 +10,12 @@ import {
   Activity,
   Loader2,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import Link from "next/link";
+import React, { useState, useCallback } from "react";
+
 import { getBackendBaseURL } from "@/core/config";
+import { APPOINTMENT_PREVIEW_FIELDS } from "@/core/patient/patientInfoSchema";
+import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -26,9 +28,18 @@ interface EvidenceItem {
   findings_brief?: string;
   ocr_summary?: string;
   is_abnormal?: boolean;
+  pipeline?: string;
+  viewer_kind?: string;
+  modality?: string;
+  review_status?: string;
+  report_text?: string;
+  spatial_info?: {
+    location?: string;
+    clinical_warning?: string;
+  };
 }
 
-interface AppointmentPreviewData {
+export interface AppointmentPreviewData {
   type: "appointment_preview";
   thread_id: string;
   patient_info: Record<string, string | number | null>;
@@ -51,6 +62,7 @@ interface ConfirmedData {
 
 interface AppointmentPreviewProps {
   data: AppointmentPreviewData;
+  onCancel?: () => void;
 }
 
 // ── Priority config ───────────────────────────────────────
@@ -62,12 +74,34 @@ const priorityConfig: Record<string, { label: string; color: string; dot: string
   low: { label: "低", color: "bg-slate-50 text-slate-600 border-slate-200", dot: "bg-slate-400" },
 };
 
+function isBrainEvidence(ev: EvidenceItem): boolean {
+  return (
+    ev.pipeline === "brain_nifti_v1" ||
+    ev.viewer_kind === "brain_spatial_review" ||
+    ev.modality?.startsWith("brain_mri") === true
+  );
+}
+
+function formatReviewStatus(status?: string): string | null {
+  switch (status) {
+    case "reviewed":
+      return "已医生复核";
+    case "pending_review":
+    case "pending_doctor_review":
+      return "待医生复核";
+    case "processing":
+      return "处理中";
+    default:
+      return null;
+  }
+}
+
 // ── Component ─────────────────────────────────────────────
 
-export function AppointmentPreview({ data }: AppointmentPreviewProps) {
+export function AppointmentPreview({ data, onCancel }: AppointmentPreviewProps) {
   // Editable patient info
   const [patientInfo, setPatientInfo] = useState<Record<string, string | number | null>>(
-    data.patient_info || {}
+    data.patient_info ?? {}
   );
 
   // Evidence selection (all selected by default)
@@ -116,8 +150,8 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result: ConfirmedData = await res.json();
       setConfirmed(result);
-    } catch (e: any) {
-      setError(e.message || "提交失败");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "提交失败");
     } finally {
       setIsSubmitting(false);
     }
@@ -165,16 +199,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
 
   const priority = priorityConfig[data.suggested_priority] ?? priorityConfig.medium!;
 
-  // Patient info fields to display
-  const fields: { key: string; label: string; placeholder: string }[] = [
-    { key: "name", label: "姓名", placeholder: "请输入姓名" },
-    { key: "age", label: "年龄", placeholder: "请输入年龄" },
-    { key: "sex", label: "性别", placeholder: "男/女" },
-    { key: "chief_complaint", label: "主诉", placeholder: "主要症状" },
-    { key: "present_illness", label: "现病史", placeholder: "症状发展经过" },
-    { key: "past_history", label: "既往病史", placeholder: "无" },
-    { key: "allergy_history", label: "过敏史", placeholder: "无" },
-  ];
+  const fields = APPOINTMENT_PREVIEW_FIELDS;
 
   return (
     <div className="my-3 w-full max-w-lg rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50/80 to-indigo-50/60 shadow-sm overflow-hidden">
@@ -236,6 +261,8 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
           <div className="space-y-1.5">
             {data.evidence_items.map((ev) => {
               const isSelected = selectedEvidence.has(ev.id);
+              const brainEvidence = isBrainEvidence(ev);
+              const reviewStatusLabel = brainEvidence ? formatReviewStatus(ev.review_status) : null;
               return (
                 <label
                   key={ev.id}
@@ -255,7 +282,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs">
-                        {ev.type === "imaging" ? "🫁" : "🧪"}
+                        {brainEvidence ? "🧠" : ev.type === "imaging" ? "🫁" : "🧪"}
                       </span>
                       <span className="text-xs font-medium text-slate-700 truncate">
                         {ev.title}
@@ -264,9 +291,22 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
                         <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
                       )}
                     </div>
+                    {reviewStatusLabel && (
+                      <p className="mt-0.5 text-[10px] text-slate-500">{reviewStatusLabel}</p>
+                    )}
+                    {brainEvidence && ev.spatial_info?.location && (
+                      <p className="text-[10px] text-slate-500 mt-0.5 truncate">
+                        定位区域：{ev.spatial_info.location}
+                      </p>
+                    )}
                     {ev.findings_brief && (
                       <p className="text-[10px] text-slate-500 mt-0.5 truncate">
-                        AI 发现 {ev.findings_count} 处: {ev.findings_brief}
+                        AI 发现 {ev.findings_count ?? 0} 处: {ev.findings_brief}
+                      </p>
+                    )}
+                    {brainEvidence && ev.report_text && (
+                      <p className="text-[10px] text-slate-500 mt-0.5 line-clamp-2">
+                        {ev.report_text}
                       </p>
                     )}
                     {ev.ocr_summary && (
@@ -283,7 +323,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
       )}
 
       {/* Department & Reason */}
-      {(data.suggested_department || data.reason) && (
+      {(data.suggested_department ?? data.reason) && (
         <div className="px-5 py-2.5 border-b border-blue-100 text-xs text-slate-600">
           {data.suggested_department && (
             <p>
@@ -311,6 +351,7 @@ export function AppointmentPreview({ data }: AppointmentPreviewProps) {
         <button
           className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
           disabled={isSubmitting}
+          onClick={onCancel}
         >
           <X className="h-3.5 w-3.5" />
           取消

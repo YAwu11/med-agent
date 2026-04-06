@@ -1,32 +1,33 @@
 "use client";
 
-import React, { useState, useRef, useCallback, useEffect } from "react";
-import { cn } from "@/lib/utils";
 import {
-  ZoomIn,
-  ZoomOut,
-  Move,
-  Pen,
+  Bot,
+  Check,
+  Contrast,
+  Download,
   Eraser,
-  RotateCcw,
   Eye,
   EyeOff,
-  Plus,
-  Sun,
-  Contrast,
+  Move,
+  Pen,
   Pencil,
-  Trash2,
-  Bot,
-  UserCheck,
-  Save,
-  Download,
-  Check,
-  X,
-  Undo2,
+  Plus,
   Redo2,
+  RotateCcw,
+  Save,
+  Sun,
+  Trash2,
+  Undo2,
+  UserCheck,
+  X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import React, { useState, useRef, useCallback, useEffect } from "react";
+
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 // ── MCP-compatible Finding JSON Schema ─────────────────────
 // This matches the JSON structure returned by the MCP analyze_xray tool.
@@ -57,9 +58,88 @@ export interface McpAnalysisResult {
   findings: Finding[];
   model_version?: string;
   analyzed_at?: string;
-  ai_result?: any;
-  doctor_result?: any;
+  summary?: Record<string, unknown>;
+  densenet_probs?: Record<string, number>;
+  rejected?: Array<Record<string, unknown>>;
+  pipeline?: string;
+  disclaimer?: string;
+  ai_result?: Partial<McpAnalysisResult>;
+  doctor_result?: Partial<McpAnalysisResult>;
   status?: string;
+}
+
+type ImagingStructuredData = Partial<McpAnalysisResult> & {
+  report_id?: string;
+};
+
+interface ImagingReport {
+  report_id: string;
+  image_path?: string | null;
+  ai_result?: ImagingStructuredData | null;
+  doctor_result?: ImagingStructuredData | null;
+}
+
+interface ImagingReportListResponse {
+  reports?: ImagingReport[];
+}
+
+interface AnalyzeCVResponse {
+  report_id: string;
+  data: ImagingStructuredData;
+  detail?: string;
+}
+
+function normalizeFindings(findings?: Finding[] | null): Finding[] {
+  return (findings ?? []).map((finding, index) => ({
+    ...finding,
+    id: finding.id || `finding-${index + 1}`,
+  }));
+}
+
+function hasAnalysisContent(data?: Partial<McpAnalysisResult> | null): boolean {
+  return Boolean(data && Object.keys(data).length > 0);
+}
+
+function toViewerData(
+  data?: ImagingStructuredData | null,
+  fallbackImagePath?: string,
+): McpAnalysisResult | null {
+  if (!data && !fallbackImagePath) {
+    return null;
+  }
+
+  const nestedData = hasAnalysisContent(data?.doctor_result)
+    ? data?.doctor_result
+    : hasAnalysisContent(data?.ai_result)
+      ? data?.ai_result
+      : data;
+  const findings = normalizeFindings(nestedData?.findings);
+
+  return {
+    image_path: nestedData?.image_path ?? data?.image_path ?? fallbackImagePath ?? "",
+    findings,
+    model_version: nestedData?.model_version ?? nestedData?.pipeline,
+    analyzed_at: nestedData?.analyzed_at,
+    summary: nestedData?.summary,
+    densenet_probs: nestedData?.densenet_probs,
+    rejected: nestedData?.rejected,
+    pipeline: nestedData?.pipeline,
+    disclaimer: nestedData?.disclaimer,
+    ai_result: data?.ai_result,
+    doctor_result: data?.doctor_result,
+    status: nestedData?.status ?? data?.status ?? (findings.length > 0 ? "completed" : undefined),
+  };
+}
+
+function normalizeViewerData(data?: McpAnalysisResult | null): McpAnalysisResult | null {
+  if (!data) {
+    return null;
+  }
+
+  return {
+    ...data,
+    findings: normalizeFindings(data.findings),
+  };
 }
 
 // ── Color System ───────────────────────────────────────────
@@ -86,7 +166,7 @@ const colorMap: Record<string, {
 function pickColor(existing: Finding[], source: "ai" | "human"): string {
   const pool = source === "ai" ? AI_COLORS : HUMAN_COLORS;
   const used = new Set(existing.map(f => f.color));
-  return pool.find(c => !used.has(c)) || pool[existing.length % pool.length]!;
+  return pool.find(c => !used.has(c)) ?? pool[existing.length % pool.length]!;
 }
 
 // ── Source Badge Component ─────────────────────────────────
@@ -138,45 +218,56 @@ export function ImagingViewer({
   mcpResult?: McpAnalysisResult,
   reportId?: string,
   imagePath?: string,
-  initialStructuredData?: any
+  initialStructuredData?: ImagingStructuredData
 }) {
-  const [data, setData] = useState<McpAnalysisResult | null>(
-    mcpResult || (propImagePath ? { image_path: propImagePath, findings: initialStructuredData?.findings || [] } : null)
+  const initialViewerData = normalizeViewerData(
+    mcpResult ?? toViewerData(initialStructuredData, propImagePath)
   );
-  const [reportId, setReportId] = useState<string | null>(propReportId || null);
-  const [isLoading, setIsLoading] = useState(!mcpResult && !initialStructuredData && !!threadId);
+  const [data, setData] = useState<McpAnalysisResult | null>(
+    initialViewerData
+  );
+  const [reportId, setReportId] = useState<string | null>(propReportId ?? null);
+  const [, setIsLoading] = useState(Boolean(threadId && propReportId && !mcpResult));
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // State
-  const [findings, setFindings] = useState<Finding[]>(data?.findings || []);
+  const [findings, setFindings] = useState<Finding[]>(initialViewerData?.findings ?? []);
+  const [imageNaturalSize, setImageNaturalSize] = useState<{w: number, h: number} | null>(null);
+  const [renderedSize, setRenderedSize] = useState<{width: number, height: number}>({ width: 0, height: 0 });
 
   useEffect(() => {
-    // If we have data directly from props, don't fetch from DB.
-    if (initialStructuredData || mcpResult || !threadId) return;
+    if (mcpResult || !threadId || !propReportId) return;
 
     setIsLoading(true);
-    import("@/core/config").then(({ getBackendBaseURL }) => {
-      fetch(`${getBackendBaseURL()}/api/threads/${threadId}/imaging-reports`)
-        .then(r => r.json())
-        .then(d => {
-          if (d.reports && d.reports.length > 0) {
-            // Find the exact report if passed, else just first one
-            const report = (propReportId) ? d.reports.find((r: any) => r.report_id === propReportId) || d.reports[0] : d.reports[0];
-            setReportId(report.report_id);
-            const analyzedResult = report.doctor_result || report.ai_result || {};
-            const parsedData = {
-              image_path: report.image_path || analyzedResult.image_path,
-              findings: analyzedResult.findings || [],
-              model_version: analyzedResult.model_version,
-              analyzed_at: analyzedResult.analyzed_at,
-            };
-            setData(parsedData);
-            setFindings(parsedData.findings || []);
-          }
-        })
-        .finally(() => setIsLoading(false));
-    });
-  }, [threadId, mcpResult, initialStructuredData, propReportId]);
+    void (async () => {
+      try {
+        const { getBackendBaseURL } = await import("@/core/config");
+        const response = await fetch(`${getBackendBaseURL()}/api/threads/${threadId}/imaging-reports`);
+        const payload = (await response.json()) as ImagingReportListResponse;
+        const report = payload.reports?.find((currentReport) => currentReport.report_id === propReportId);
+
+        if (!report) {
+          return;
+        }
+
+        setReportId(report.report_id);
+        const analyzedResult: ImagingStructuredData = report.doctor_result ?? report.ai_result ?? {};
+        const parsedData = toViewerData(
+          { ...analyzedResult, image_path: report.image_path ?? analyzedResult.image_path },
+          report.image_path ?? analyzedResult.image_path,
+        );
+
+        if (!parsedData) {
+          return;
+        }
+
+        setData(parsedData);
+        setFindings(parsedData.findings ?? []);
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, [threadId, mcpResult, propReportId]);
 
   const [activeTool, setActiveTool] = useState<ToolMode>("pan");
   const [zoom, setZoom] = useState(100);
@@ -218,7 +309,7 @@ export function ImagingViewer({
   const redoStackRef = useRef<HistorySnapshot[]>([]);
   const MAX_HISTORY = 50;
   // Force re-render when stacks change (refs don't trigger re-render)
-  const [historyVersion, setHistoryVersion] = useState(0);
+  const [, setHistoryVersion] = useState(0);
 
   // Keep latest state in refs so undo/redo always see fresh values
   const findingsRef = useRef(findings);
@@ -293,6 +384,33 @@ export function ImagingViewer({
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
 
+  // ── Object-Fit Contain Size Calculator ───────────────────
+  useEffect(() => {
+    if (!viewerRef.current || !imageNaturalSize) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      
+      const { width: vw, height: vh } = entry.contentRect;
+      const { w: iw, h: ih } = imageNaturalSize;
+      if (vw === 0 || vh === 0 || iw === 0 || ih === 0) return;
+
+      const viewerRatio = vw / vh;
+      const imgRatio = iw / ih;
+
+      if (viewerRatio > imgRatio) {
+        // Viewer is wider than image aspect ratio -> image height is bounded by viewer height
+        setRenderedSize({ width: vh * imgRatio, height: vh });
+      } else {
+        // Viewer is taller than image aspect ratio -> image width is bounded by viewer width
+        setRenderedSize({ width: vw, height: vw / imgRatio });
+      }
+    });
+
+    observer.observe(viewerRef.current);
+    return () => observer.disconnect();
+  }, [imageNaturalSize]);
+
   // ── Coordinate helpers ───────────────────────────────────
   /** Convert mouse event to percentage coordinates relative to the image layer,
    *  accounting for current zoom and pan so annotations align with the image. */
@@ -339,7 +457,7 @@ export function ImagingViewer({
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleReset = useCallback(() => {
     setZoom(100);
@@ -598,11 +716,6 @@ export function ImagingViewer({
   };
 
   /** Wrapper that pushes history before update (for discrete edits, not continuous drag) */
-  const updateFindingWithHistory = (id: string, patch: Partial<Finding>) => {
-    pushHistory();
-    updateFinding(id, patch);
-  };
-
   const deleteFinding = (id: string) => {
     pushHistory();
     setFindings(prev => prev.filter(f => f.id !== id));
@@ -619,9 +732,15 @@ export function ImagingViewer({
 
   // ── Export JSON ──────────────────────────────────────────
   const exportJson = (): McpAnalysisResult => ({
-    image_path: data?.image_path || "",
+    image_path: data?.image_path ?? "",
     model_version: data?.model_version,
     analyzed_at: data?.analyzed_at,
+    summary: data?.summary ?? {},
+    densenet_probs: data?.densenet_probs ?? {},
+    rejected: data?.rejected ?? [],
+    pipeline: data?.pipeline,
+    disclaimer: data?.disclaimer,
+    status: data?.status,
     findings,
   });
 
@@ -633,7 +752,7 @@ export function ImagingViewer({
         const res = await fetch(`${getBackendBaseURL()}/api/threads/${threadId}/imaging-reports/${reportId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(json),
+          body: JSON.stringify({ doctor_result: json }),
         });
         if (res.ok) {
           console.log("[ImagingViewer] Saved corrected JSON to backend");
@@ -659,29 +778,26 @@ export function ImagingViewer({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enable_sam: false, image_url: data?.image_path })
       });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.detail || "Analysis failed");
-      
+      const result = (await res.json()) as AnalyzeCVResponse;
+      if (!res.ok) throw new Error(result.detail ?? "Analysis failed");
+      const parsedData = toViewerData(result.data, result.data.image_path ?? data?.image_path);
+      if (!parsedData) {
+        throw new Error("Analysis returned no structured result");
+      }
+
       setReportId(result.report_id);
-      setData(result.data);
-      setFindings(result.data.ai_result?.findings || []);
+      setData(parsedData);
+      setFindings(parsedData.findings ?? []);
       setHasUnsavedChanges(true); // AI just generated it, technically it's a new draft
-    } catch (e: any) {
-      alert(`AI 智能阅片失败: ${e.message}`);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Analysis failed";
+      alert(`AI 智能阅片失败: ${message}`);
     } finally {
       setIsAnalyzing(false);
     }
-  }, [threadId]);
+  }, [threadId, data?.image_path]);
 
-  // 自动触发 AI 分析（有影像但无 AI 结果时，自动调用一次）
-  const autoAnalyzedRef = useRef(false);
-  useEffect(() => {
-    const hasBeenAnalyzed = data?.ai_result || data?.status === 'completed' || data?.status === 'pending_review' || data?.status === 'reviewed';
-    if (data?.image_path && !hasBeenAnalyzed && !isAnalyzing && !autoAnalyzedRef.current && !isLoading) {
-      autoAnalyzedRef.current = true;
-      handleAnalyzeCV();
-    }
-  }, [data?.image_path, data?.ai_result, data?.status, isAnalyzing, isLoading, handleAnalyzeCV]);
+  // 自动触发逻辑已移除，医生通过点击“一键AI诊断”按钮手动触发
 
   const handleDownload = () => {
     const json = exportJson();
@@ -714,6 +830,19 @@ export function ImagingViewer({
   const aiCount = findings.filter(f => f.source === "ai" && !f.modified).length;
   const humanCount = findings.filter(f => f.source === "human").length;
   const correctedCount = findings.filter(f => f.source === "ai" && f.modified).length;
+  const summary = data?.summary && typeof data.summary === "object" ? data.summary : {};
+  const diseaseBreakdown = summary.disease_breakdown && typeof summary.disease_breakdown === "object"
+    ? Object.entries(summary.disease_breakdown as Record<string, unknown>)
+    : [];
+  const bilateralDiseases = Array.isArray(summary.bilateral_diseases)
+    ? summary.bilateral_diseases.map((value) => String(value))
+    : [];
+  const probabilityEntries = Object.entries(data?.densenet_probs ?? {})
+    .sort(([, left], [, right]) => right - left)
+    .slice(0, 6);
+  const rejectedFindings = Array.isArray(data?.rejected) ? data.rejected : [];
+  const totalFindings = typeof summary.total_findings === "number" ? summary.total_findings : findings.length;
+  const pipelineLabel = data?.model_version ?? data?.pipeline ?? "N/A";
 
   // Drawing preview rect
   const drawRect = (isDrawing && drawStart && drawCurrent) ? {
@@ -730,7 +859,7 @@ export function ImagingViewer({
         <div>
           <h2 className="text-xl font-semibold tracking-tight text-slate-800">Chest X-Ray Analysis</h2>
           <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
-            Model: {data?.model_version || "N/A"} · {data?.image_path || "N/A"}
+            Model: {pipelineLabel} · {data?.image_path ?? "N/A"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -805,7 +934,7 @@ export function ImagingViewer({
       )}
 
       {/* ── Image Viewer ──────────────────────────────── */}
-      <div className="flex-1 min-h-0 relative">
+      <div className="relative h-[360px] shrink-0 sm:h-[420px] xl:h-[500px]">
         <div
           ref={viewerRef}
           className={cn("relative w-full h-full bg-black rounded-xl overflow-hidden shadow-xl", cursorClass[activeTool])}
@@ -823,35 +952,39 @@ export function ImagingViewer({
               </div>
             </div>
           )}
-          {/* ═══ Transform Layer: image + annotations move together ═══ */}
-          <div
-            ref={imageLayerRef}
-            className="relative w-full h-full transition-transform duration-150"
-            style={{
-              transform: `scale(${zoom / 100}) translate(${panOffset.x / (zoom / 100)}px, ${panOffset.y / (zoom / 100)}px)`,
-              transformOrigin: "center center",
-            }}
-          >
-            {/* X-Ray Image */}
-            {data?.image_path ? (
-              <img
-                src={data.image_path}
-                alt="Medical Image"
-                className="w-full h-full object-contain select-none pointer-events-none"
-                draggable={false}
-                style={{
-                  filter: `brightness(${brightness / 100}) contrast(${contrast / 100})`,
-                }}
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-white/40 text-sm">
-                暂无影像
-              </div>
-            )}
+          {/* ═══ Transform Layer Wrapper (centers the layer to prevent coordinate drifting) ═══ */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+            <div
+              ref={imageLayerRef}
+              className="relative transition-transform duration-150 pointer-events-auto shadow-2xl bg-black"
+              style={{
+                transform: `scale(${zoom / 100}) translate(${panOffset.x / (zoom / 100)}px, ${panOffset.y / (zoom / 100)}px)`,
+                transformOrigin: "center center",
+                width: imageNaturalSize ? `${renderedSize.width}px` : "100%",
+                height: imageNaturalSize ? `${renderedSize.height}px` : "100%"
+              }}
+            >
+              {/* X-Ray Image */}
+              {data?.image_path ? (
+                <img
+                  src={data.image_path}
+                  alt="Medical Image"
+                  className="absolute inset-0 w-full h-full object-fill select-none pointer-events-none"
+                  draggable={false}
+                  onLoad={(e) => setImageNaturalSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                  style={{
+                    filter: `brightness(${brightness / 100}) contrast(${contrast / 100})`,
+                  }}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-white/40 text-sm">
+                  暂无影像
+                </div>
+              )}
 
             {/* Annotation overlays — same layer as image, moves with zoom/pan */}
             {showAnnotations && findings.map(f => {
-              const colors = colorMap[f.color] || colorMap.red!;
+              const colors = colorMap[f.color] ?? colorMap.red!;
               const isSelected = selectedId === f.id;
               return (
                 <div
@@ -936,7 +1069,6 @@ export function ImagingViewer({
               );
             })}
 
-            {/* ── Sketch SVG overlay (freehand lines) ── */}
             {(sketches.length > 0 || currentSketch) && (
               <svg
                 className={cn(
@@ -1003,6 +1135,7 @@ export function ImagingViewer({
             )}
           </div>
           {/* ═══ End Transform Layer ═══ */}
+          </div>
 
           {/* Pending finding: name input dialog — OUTSIDE transform layer, pinned to viewport */}
           {pendingFinding && (
@@ -1065,24 +1198,21 @@ export function ImagingViewer({
             <button onClick={handleReset} className="p-2 rounded-lg text-white/60 hover:bg-white/10 hover:text-white transition-all" title="重置视图">
               <RotateCcw className="h-4 w-4" />
             </button>
-            {/* Clear all canvas (sketches + findings) */}
+            {/* Clear sketches only */}
             <button
               onClick={() => {
-                if (findings.length === 0 && sketches.length === 0) return;
+                if (sketches.length === 0) return;
                 pushHistory();
-                setFindings(data?.findings || []); // reset to original AI findings
                 setSketches([]);
-                setSelectedId(null);
-                setEditingId(null);
                 setHasUnsavedChanges(true);
               }}
               className={cn(
                 "p-2 rounded-lg transition-all",
-                (findings.length > (data?.findings?.length || 0) || sketches.length > 0)
+                sketches.length > 0
                   ? "text-red-400 hover:bg-red-500/20 hover:text-red-300"
                   : "text-white/60 hover:bg-white/10 hover:text-white"
               )}
-              title="一键清除画布 (恢复原始AI标注)"
+              title="清除画笔痕迹"
             >
               <Trash2 className="h-4 w-4" />
             </button>
@@ -1164,6 +1294,122 @@ export function ImagingViewer({
           </button>
         </div>
 
+        <div className="grid gap-3 xl:grid-cols-3">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500">DenseNet 疾病概率</h4>
+              <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+                {probabilityEntries.length} 项
+              </span>
+            </div>
+
+            {probabilityEntries.length === 0 ? (
+              <p className="text-sm text-slate-400">本次分析未返回疾病概率分布。</p>
+            ) : (
+              <div className="space-y-2.5">
+                {probabilityEntries.map(([name, score]) => {
+                  const percent = Math.max(0, Math.min(100, score * 100));
+                  return (
+                    <div key={name} className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-semibold text-slate-700">{name}</span>
+                        <span className="font-mono text-slate-500">{percent.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-100">
+                        <div className="h-2 rounded-full bg-violet-500 transition-all" style={{ width: `${percent}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500">结构化摘要</h4>
+              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                {totalFindings} Findings
+              </span>
+            </div>
+
+            <div className="space-y-3 text-sm text-slate-600">
+              <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+                <span>病灶总数</span>
+                <span className="font-semibold text-slate-800">{totalFindings}</span>
+              </div>
+
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">双侧分布</p>
+                {bilateralDiseases.length === 0 ? (
+                  <p className="text-sm text-slate-400">未报告双侧病变。</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {bilateralDiseases.map((item) => (
+                      <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">疾病分布</p>
+                {diseaseBreakdown.length === 0 ? (
+                  <p className="text-sm text-slate-400">未返回疾病分布统计。</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {diseaseBreakdown.map(([name, count]) => (
+                      <div key={name} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-[12px]">
+                        <span className="font-medium text-slate-700">{name}</span>
+                        <span className="font-mono text-slate-500">{String(count)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {data?.disclaimer ? (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700">
+                  {data.disclaimer}
+                </p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-widest text-slate-500">过滤候选</h4>
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                {rejectedFindings.length} 项
+              </span>
+            </div>
+
+            {rejectedFindings.length === 0 ? (
+              <p className="text-sm text-slate-400">本次分析没有被过滤的候选病灶。</p>
+            ) : (
+              <div className="space-y-2">
+                {rejectedFindings.slice(0, 4).map((item, index) => {
+                  const disease = typeof item.disease === "string" ? item.disease : `候选 ${index + 1}`;
+                  const reason = typeof item.reason === "string" ? item.reason : "未提供过滤原因";
+                  const confidence = typeof item.confidence === "number" ? `${(item.confidence * 100).toFixed(1)}%` : null;
+
+                  return (
+                    <div key={`${disease}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[12px] font-semibold text-slate-700">{disease}</span>
+                        {confidence ? <span className="text-[11px] font-mono text-slate-500">{confidence}</span> : null}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">{reason}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Findings list */}
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between mb-3">
@@ -1183,7 +1429,7 @@ export function ImagingViewer({
           ) : (
             <div className="flex gap-3 overflow-x-auto pb-1">
               {findings.map(f => {
-                const colors = colorMap[f.color] || colorMap.red!;
+                const colors = colorMap[f.color] ?? colorMap.red!;
                 const isEditing = editingId === f.id;
                 const isSelected = selectedId === f.id;
 
@@ -1304,7 +1550,7 @@ export function ImagingViewer({
 
                     {/* Bbox coordinates (read-only display) */}
                     <div className="text-[10px] text-slate-400 font-mono mb-1">
-                      bbox: [{f.bbox.x.toFixed(1)}, {f.bbox.y.toFixed(1)}, {f.bbox.width.toFixed(1)}, {f.bbox.height.toFixed(1)}]
+                      bbox: [{f.bbox?.x?.toFixed(1) ?? 'N/A'}, {f.bbox?.y?.toFixed(1) ?? 'N/A'}, {f.bbox?.width?.toFixed(1) ?? 'N/A'}, {f.bbox?.height?.toFixed(1) ?? 'N/A'}]
                     </div>
 
                     {/* Note */}

@@ -1,7 +1,5 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   Clock,
   AlertCircle,
@@ -16,16 +14,19 @@ import {
   Inbox,
   Upload,
   Plus,
-  X,
   Loader2,
-  Paperclip,
+  Trash2,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import React, { useEffect, useState } from "react";
+import { toast } from "sonner";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { getBackendBaseURL } from "@/core/config";
 import { cn } from "@/lib/utils";
-import { Textarea } from "@/components/ui/textarea";
 
 // ── Types ─────────────────────────────────────────────────
 interface PatientInfo {
@@ -45,6 +46,7 @@ interface EvidenceItem {
 
 interface CaseItem {
   case_id: string;
+  patient_thread_id: string;
   status: string;
   priority: string;
   patient_info: PatientInfo;
@@ -60,8 +62,6 @@ interface CaseCounts {
   diagnosed: number;
   closed: number;
 }
-
-import { getBackendBaseURL } from "@/core/config";
 
 const EMPTY_COUNTS: CaseCounts = { total: 0, pending: 0, in_review: 0, diagnosed: 0, closed: 0 };
 
@@ -106,17 +106,8 @@ export default function DoctorQueuePage() {
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [selectedCase, setSelectedCase] = useState<CaseItem | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isLive, setIsLive] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
 
   // ── New Case Dialog state ──
-  const [showNewCase, setShowNewCase] = useState(false);
-  const [newCaseForm, setNewCaseForm] = useState({
-    name: "", age: "", sex: "男", phone: "",
-    chief_complaint: "", present_illness: "",
-    priority: "medium",
-  });
-  const [newCaseFiles, setNewCaseFiles] = useState<File[]>([]);
   const [isCreating, setIsCreating] = useState(false);
 
   // Fetch cases from API
@@ -127,15 +118,12 @@ export default function DoctorQueuePage() {
       const data = await res.json();
       setCases(data.cases as CaseItem[]);
       setCounts(data.counts);
-      setIsLive(true);
       // Auto-select first if nothing selected
       if (data.cases.length > 0) {
-        setSelectedCase((prev) => prev || data.cases[0] as CaseItem);
+        setSelectedCase((prev) => prev ?? (data.cases[0] as CaseItem));
       }
     } catch {
       console.info("[Queue] API unavailable");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -145,8 +133,8 @@ export default function DoctorQueuePage() {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return (
-        c.patient_info.name?.toLowerCase().includes(q) ||
-        c.patient_info.chief_complaint?.toLowerCase().includes(q) ||
+        (c.patient_info.name?.toLowerCase().includes(q) ?? false) ||
+        (c.patient_info.chief_complaint?.toLowerCase().includes(q) ?? false) ||
         c.case_id.includes(q)
       );
     }
@@ -155,7 +143,7 @@ export default function DoctorQueuePage() {
 
   // Load cases on mount + SSE subscription for real-time updates
   useEffect(() => {
-    loadCases();
+    void loadCases();
 
     // SSE subscription (best-effort, non-blocking)
     let cleanup: (() => void) | undefined;
@@ -164,14 +152,12 @@ export default function DoctorQueuePage() {
         (event) => {
           // Refresh the case list on any relevant event
           if (["new_case", "status_change", "new_evidence", "diagnosed"].includes(event.type)) {
-            loadCases();
+            void loadCases();
           }
         },
-        () => {
-          // SSE connection error — ignore, will retry via polling
-        },
+        () => undefined,
       );
-    }).catch(() => { /* API module not available */ });
+    }).catch(() => undefined);
 
     return () => cleanup?.();
   }, []);
@@ -208,13 +194,13 @@ export default function DoctorQueuePage() {
         formData.append("files", file);
       }
       // Use the case's thread_id (patient_thread_id) for the uploads API
-      const threadId = (selectedCase as any).patient_thread_id || selectedCase.case_id;
+      const threadId = selectedCase.patient_thread_id ?? selectedCase.case_id;
       const res = await fetch(
         `${getBackendBaseURL()}/api/threads/${threadId}/uploads`,
         { method: "POST", body: formData }
       );
       if (res.ok) {
-        loadCases(); // Refresh to pick up new evidence
+        void loadCases(); // Refresh to pick up new evidence
       }
     } catch (err) {
       console.error("[DoctorUpload] Failed:", err);
@@ -237,7 +223,7 @@ export default function DoctorQueuePage() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files?.length) {
-      uploadFiles(e.dataTransfer.files);
+      void uploadFiles(e.dataTransfer.files);
     }
   };
 
@@ -245,12 +231,10 @@ export default function DoctorQueuePage() {
   const handleQuickCreateCase = async () => {
     setIsCreating(true);
     try {
-      const threadId = `doc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const res = await fetch(`${getBackendBaseURL()}/api/cases`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          patient_thread_id: threadId,
           priority: "medium",
           patient_info: {
             name: "新增病患",
@@ -267,18 +251,31 @@ export default function DoctorQueuePage() {
           body: JSON.stringify({ status: "in_review" })
         });
         
-        // 刷新列表并选中新建的病例
-        await loadCases();
-        const updatedCases = await fetch(`${getBackendBaseURL()}/api/cases`).then(r => r.json()).catch(() => []);
-        const newCase = updatedCases.find((c: any) => c.case_id === data.case_id);
-        if (newCase) {
-          setSelectedCase(newCase);
-        }
+        toast.success("病例创建成功，正在跳转填写页面...");
+        router.push(`/doctor/chat/${data.case_id}`);
       }
     } catch (err) {
       console.error("[QuickCreateCase] Failed:", err);
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const handleDeleteCase = async (caseId: string) => {
+    if (!window.confirm("确定要永久删除此病例及所有相关数据吗？这是一项不可逆操作。")) return;
+    try {
+      const res = await fetch(`${getBackendBaseURL()}/api/cases/${caseId}`, { method: "DELETE" });
+      if (res.ok) {
+        if (selectedCase?.case_id === caseId) {
+          setSelectedCase(null);
+        }
+        await loadCases();
+      } else {
+        alert("删除失败，请稍后重试");
+      }
+    } catch (err) {
+      console.error("[DeleteCase] Failed:", err);
+      alert("删除失败，请检查网络连接");
     }
   };
 
@@ -413,9 +410,9 @@ export default function DoctorQueuePage() {
                     </div>
 
                     <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-sm font-bold text-slate-900">{c.patient_info.name || "未登记"}</span>
+                      <span className="text-sm font-bold text-slate-900">{c.patient_info.name ?? "未登记"}</span>
                       <span className="text-[11px] text-slate-400">·</span>
-                      <span className="text-xs text-slate-500">{c.patient_info.chief_complaint || "主诉未填写"}</span>
+                      <span className="text-xs text-slate-500">{c.patient_info.chief_complaint ?? "主诉未填写"}</span>
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -471,8 +468,20 @@ export default function DoctorQueuePage() {
                   <p className="text-sm text-slate-500 mt-1">
                     Case ID: <span className="font-mono">{selectedCase.case_id}</span>
                   </p>
+                  <p className="text-xs text-slate-400 mt-0.5 font-mono">
+                    Thread (沙盒): {selectedCase.patient_thread_id}
+                  </p>
                 </div>
-                <div className="flex gap-3">
+                <div className="flex gap-3 items-center">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDeleteCase(selectedCase.case_id)}
+                    className="text-slate-400 hover:text-red-600 hover:bg-red-50 mr-2"
+                    title="删除病例"
+                  >
+                    <Trash2 className="h-5 w-5" />
+                  </Button>
                   {selectedCase.status === "pending" && (
                     <Button
                       size="lg"
@@ -503,7 +512,7 @@ export default function DoctorQueuePage() {
                   <div>
                     <div className="text-xs text-slate-500 mb-0.5">姓名</div>
                     <div className="text-lg font-bold text-slate-800">
-                      {selectedCase.patient_info.name || "未登记"}
+                      {selectedCase.patient_info.name ?? "未登记"}
                     </div>
                   </div>
                   <div className="border-l border-slate-200 pl-6">
@@ -515,7 +524,7 @@ export default function DoctorQueuePage() {
                   <div className="border-l border-slate-200 pl-6">
                     <div className="text-xs text-slate-500 mb-0.5">主诉</div>
                     <div className="text-sm font-semibold text-slate-700 max-w-md">
-                      {selectedCase.patient_info.chief_complaint || "未填写"}
+                      {selectedCase.patient_info.chief_complaint ?? "未填写"}
                     </div>
                   </div>
                 </div>
@@ -529,7 +538,7 @@ export default function DoctorQueuePage() {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {selectedCase.evidence.map((ev, idx) => {
-                  const EvIcon = evidenceIcons[ev.type] || FileText;
+                  const EvIcon = evidenceIcons[ev.type] ?? FileText;
                   return (
                     <div
                       key={idx}

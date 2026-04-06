@@ -36,6 +36,7 @@ _pspnet_model = None
 _pspnet_targets = None
 _densenet_model = None
 _medsam_predictor = None
+_warmed_up = False
 
 
 def _get_yolo():
@@ -98,13 +99,16 @@ def _get_medsam():
 
 
 def warmup_models():
-    """Pre-load all models at service startup. Call this once."""
+    """Load all models now to avoid later bottlenecks."""
+    global _warmed_up
+    if globals().get("_warmed_up", False):
+        return
     _logger.info("[P0] ========== Warming up all models ==========")
     _get_yolo()
     _get_pspnet()
     _get_densenet()
-    # MedSAM is optional, don't fail startup if missing
-    _get_medsam()
+    # Skip _get_medsam() to save VRAM/RAM for devices with tight memory constraints
+    _warmed_up = True
     _logger.info("[P0] ========== All models ready ==========")
 
 

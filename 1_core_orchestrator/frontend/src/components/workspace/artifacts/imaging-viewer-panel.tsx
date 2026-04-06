@@ -1,6 +1,5 @@
-import { ScanLineIcon, XIcon, EditIcon, RefreshCwIcon, CheckCircleIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { ScanLineIcon, XIcon, EditIcon, CheckCircleIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import {
   Artifact,
@@ -11,12 +10,21 @@ import {
   ArtifactAction,
 } from "@/components/ai-elements/artifact";
 import { Button } from "@/components/ui/button";
+import type { ImagingReport } from "@/core/imaging/api";
 import { listUploadedFiles } from "@/core/uploads/api";
 import { cn } from "@/lib/utils";
 
 import { BboxCanvas, type Finding, type BrushStroke } from "./bbox-canvas";
 import { FindingsList } from "./findings-list";
-import type { ImagingReport } from "@/core/imaging/api";
+
+type ViewerFindingInput = Partial<Finding> & {
+  disease?: string;
+};
+
+type ViewerBrushStrokeInput = Partial<BrushStroke> & {
+  tool?: string;
+  width?: number;
+};
 
 export function ImagingViewerPanel({
   className,
@@ -24,7 +32,7 @@ export function ImagingViewerPanel({
   report,
   onClose,
   onReEdit,
-  onReJudge,
+  onReJudge: _onReJudge,
 }: {
   className?: string;
   threadId: string;
@@ -36,13 +44,26 @@ export function ImagingViewerPanel({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Use doctor_result if available, otherwise fall back to ai_result
-  const doctorResult = report.doctor_result || {};
-  const findings: Finding[] = doctorResult.findings || report.ai_result?.findings || [];
-  const brushStrokes: BrushStroke[] = doctorResult.brush_strokes || [];
-  const version = (report as any).version || 1;
-  const doctorComment = doctorResult.doctor_comment || "";
-  const conclusion = doctorResult.conclusion || "pending";
+  const doctorResult = report.doctor_result ?? {};
+  const rawFindings = (doctorResult.findings ?? report.ai_result?.findings ?? []) as ViewerFindingInput[];
+  const findings: Finding[] = rawFindings.map((finding, index) => ({
+    ...finding,
+    bbox: finding.bbox ?? [0, 0, 0, 0],
+    confidence: finding.confidence ?? 0,
+    disease: finding.disease ?? "",
+    id: finding.id ?? `finding_${index}`,
+  }));
+  const rawBrushStrokes = (doctorResult.brush_strokes ?? []) as ViewerBrushStrokeInput[];
+  const brushStrokes: BrushStroke[] = rawBrushStrokes.map((brush, index) => ({
+    color: brush.color ?? "#ff6b6b",
+    id: brush.id ?? `stroke_${index}`,
+    points: brush.points ?? [],
+    strokeWidth: brush.strokeWidth ?? brush.width ?? 2,
+    tool: brush.tool === "eraser" ? "eraser" : "brush",
+  }));
+  const version = report.version ?? 1;
+  const doctorComment = doctorResult.doctor_comment ?? "";
+  const conclusion = doctorResult.conclusion ?? "pending";
 
   // Fetch image URL
   useEffect(() => {
@@ -56,7 +77,7 @@ export function ImagingViewerPanel({
         console.error("Failed to list files for image", err);
       }
     }
-    fetchImage();
+    void fetchImage();
   }, [threadId, report.image_path]);
 
   // Re-Judge trigger removed in Phase 6: All re-judging now happens at the unified Dashboard level.

@@ -7,7 +7,7 @@ Provides 5 sample cases spanning all priorities and statuses.
 
 from __future__ import annotations
 
-import logging
+from loguru import logger
 
 from app.gateway.models.case import (
     CaseStatus,
@@ -20,7 +20,6 @@ from app.gateway.models.case import (
 )
 from app.gateway.services import case_db
 
-logger = logging.getLogger(__name__)
 
 
 def ensure_seed_cases():

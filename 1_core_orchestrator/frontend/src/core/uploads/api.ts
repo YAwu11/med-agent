@@ -16,6 +16,7 @@ export interface UploadedFileInfo {
   markdown_path?: string;
   markdown_virtual_path?: string;
   markdown_artifact_url?: string;
+  ai_analysis_text?: string;
 }
 
 export interface UploadResponse {

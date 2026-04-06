@@ -21,6 +21,7 @@ from starlette.responses import Response
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
+import concurrent.futures
 
 # Add parent directory to path for torchxrayvision imports
 SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,8 +50,11 @@ def get_engine():
 # ============================================================
 mcp_server = Server("mcp-chest-xray-sse")
 
-# [CRITICAL PROTECTION] Global Lock for GPU Concurrency
-_gpu_lock = asyncio.Lock()
+# [CRITICAL PROTECTION] Global Dedicated Thread for GPU Concurrency
+# We use max_workers=1 instead of asyncio.Lock() to prevent Concurrent OOMs.
+# If a client disconnects, asyncio cancels the await, but the OS thread cleanly finishes 
+# its workload sequentially without releasing a lock prematurely to a concurrent request.
+_gpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 @mcp_server.list_tools()
@@ -98,12 +102,10 @@ async def call_tool(name: str, arguments: dict):
             logger.info(f"SSE Analyzing: {image_path} (SAM={enable_sam})")
             engine = get_engine()
             loop = asyncio.get_running_loop()
-            
-            async with _gpu_lock:
-                logger.info("Acquired GPU lock, starting heavy SSE inference...")
-                result = await loop.run_in_executor(
-                    None, lambda: engine.analyze(image_path, enable_sam=enable_sam)
-                )
+            logger.info("Queued for GPU inference...")
+            result = await loop.run_in_executor(
+                _gpu_executor, lambda: engine.analyze(image_path, enable_sam=enable_sam)
+            )
 
             logger.info(f"SSE Done: {result.get('summary', {}).get('total_findings', 0)} findings")
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]

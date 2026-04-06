@@ -1,43 +1,42 @@
-import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, expect, it } from "vitest";
 
-const { sanitizeRunStreamOptions } = await import(
-  new URL("./stream-mode.ts", import.meta.url).href
-);
+import { sanitizeRunStreamOptions } from "./stream-mode";
 
-void test("drops unsupported stream modes from array payloads", () => {
-  const sanitized = sanitizeRunStreamOptions({
-    streamMode: [
+describe("sanitizeRunStreamOptions", () => {
+  it("drops unsupported stream modes from array payloads", () => {
+    const sanitized = sanitizeRunStreamOptions({
+      streamMode: [
+        "values",
+        "messages-tuple",
+        "custom",
+        "updates",
+        "events",
+        "tools",
+      ],
+    });
+
+    expect(sanitized.streamMode).toEqual([
       "values",
       "messages-tuple",
       "custom",
       "updates",
       "events",
-      "tools",
-    ],
+    ]);
   });
 
-  assert.deepEqual(sanitized.streamMode, [
-    "values",
-    "messages-tuple",
-    "custom",
-    "updates",
-    "events",
-  ]);
-});
+  it("drops unsupported stream modes from scalar payloads", () => {
+    const sanitized = sanitizeRunStreamOptions({
+      streamMode: "tools",
+    });
 
-void test("drops unsupported stream modes from scalar payloads", () => {
-  const sanitized = sanitizeRunStreamOptions({
-    streamMode: "tools",
+    expect(sanitized.streamMode).toBeUndefined();
   });
 
-  assert.equal(sanitized.streamMode, undefined);
-});
+  it("keeps payloads without streamMode untouched", () => {
+    const options = {
+      streamSubgraphs: true,
+    };
 
-void test("keeps payloads without streamMode untouched", () => {
-  const options = {
-    streamSubgraphs: true,
-  };
-
-  assert.equal(sanitizeRunStreamOptions(options), options);
+    expect(sanitizeRunStreamOptions(options)).toBe(options);
+  });
 });

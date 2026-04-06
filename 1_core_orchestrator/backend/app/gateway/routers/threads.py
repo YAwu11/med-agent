@@ -1,20 +1,17 @@
-import logging
+from loguru import logger
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core.config.paths import Paths, get_paths
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threads", tags=["threads"])
-
 
 class ThreadDeleteResponse(BaseModel):
     """Response model for thread cleanup."""
 
     success: bool
     message: str
-
 
 def _delete_thread_data(thread_id: str, paths: Paths | None = None) -> ThreadDeleteResponse:
     """Delete local persisted filesystem data for a thread."""
@@ -29,7 +26,6 @@ def _delete_thread_data(thread_id: str, paths: Paths | None = None) -> ThreadDel
 
     logger.info("Deleted local thread data for %s", thread_id)
     return ThreadDeleteResponse(success=True, message=f"Deleted local thread data for {thread_id}")
-
 
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
 async def delete_thread_data(thread_id: str) -> ThreadDeleteResponse:

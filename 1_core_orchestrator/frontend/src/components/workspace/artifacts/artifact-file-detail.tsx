@@ -42,6 +42,10 @@ import { ArtifactLink } from "../citations/artifact-link";
 import { useThread } from "../messages/context";
 import { Tooltip } from "../tooltip";
 
+import {
+  BrainArtifactViewer,
+  extractBrainArtifactReport,
+} from "./brain-artifact-viewer";
 import { useArtifacts } from "./context";
 
 export function ArtifactFileDetail({
@@ -80,9 +84,6 @@ export function ArtifactFileDetail({
     }
     return checkCodeFile(filepath);
   }, [filepath, isWriteFile, isSkillFile]);
-  const isSupportPreview = useMemo(() => {
-    return language === "html" || language === "markdown";
-  }, [language]);
   const { content } = useArtifactContent({
     threadId,
     filepath: filepathFromProps,
@@ -90,6 +91,15 @@ export function ArtifactFileDetail({
   });
 
   const displayContent = content ?? "";
+  const brainArtifactReport = useMemo(() => {
+    if (!displayContent || language !== "json") {
+      return null;
+    }
+    return extractBrainArtifactReport(displayContent);
+  }, [displayContent, language]);
+  const isSupportPreview = useMemo(() => {
+    return language === "html" || language === "markdown" || !!brainArtifactReport;
+  }, [brainArtifactReport, language]);
 
   const [viewMode, setViewMode] = useState<"code" | "preview">("code");
   const [isInstalling, setIsInstalling] = useState(false);
@@ -235,7 +245,11 @@ export function ArtifactFileDetail({
         </div>
       </ArtifactHeader>
       <ArtifactContent className="p-0">
+        {brainArtifactReport && viewMode === "preview" && (
+          <BrainArtifactViewer report={brainArtifactReport} threadId={threadId} />
+        )}
         {isSupportPreview &&
+          !brainArtifactReport &&
           viewMode === "preview" &&
           (language === "markdown" || language === "html") && (
             <ArtifactFilePreview

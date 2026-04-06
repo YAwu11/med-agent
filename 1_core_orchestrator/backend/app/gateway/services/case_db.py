@@ -11,7 +11,7 @@ Design decisions (ADR-008):
 from __future__ import annotations
 
 import json
-import logging
+from loguru import logger
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -28,7 +28,6 @@ from app.gateway.models.case import (
     AddEvidenceRequest,
 )
 
-logger = logging.getLogger(__name__)
 
 # ── Database location ──────────────────────────────────────
 # Stored alongside the orchestrator data, not inside thread dirs.
@@ -37,7 +36,6 @@ _DB_PATH = _DB_DIR / "data" / "cases.db"
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
-
 
 def _get_conn() -> sqlite3.Connection:
     """Lazy-init the SQLite connection and ensure the table exists."""
@@ -95,17 +93,23 @@ def _get_conn() -> sqlite3.Connection:
     logger.info(f"Case DB initialized at {_DB_PATH}")
     return _conn
 
-
 # ── CRUD ──────────────────────────────────────────────────
 
 def create_case(req: CreateCaseRequest) -> Case:
     """Create a new case from a patient intake."""
     case = Case(
-        patient_thread_id=req.patient_thread_id,
+        patient_thread_id=req.patient_thread_id or "",  # placeholder, overwritten below
         priority=req.priority,
         patient_info=req.patient_info,
         evidence=req.evidence,
     )
+    # [ADR-037] ID 统一策略：
+    # 1. 患者端挂号：传入 case_id = thread_id，两端使用同一个 ID
+    # 2. 医生端手动建档：不传 case_id 也不传 thread_id，强制 thread_id = case_id
+    if req.case_id:
+        case.case_id = req.case_id
+    if not req.patient_thread_id:
+        case.patient_thread_id = case.case_id
     with _lock:
         conn = _get_conn()
         conn.execute(
@@ -125,7 +129,6 @@ def create_case(req: CreateCaseRequest) -> Case:
     logger.info(f"Created case {case.case_id} for thread {case.patient_thread_id}")
     return case
 
-
 def get_case(case_id: str) -> Case | None:
     """Fetch a single case by ID."""
     with _lock:
@@ -135,6 +138,14 @@ def get_case(case_id: str) -> Case | None:
         return None
     return Case.model_validate_json(row[0])
 
+def delete_case(case_id: str) -> bool:
+    """Delete case by case_id."""
+    with _lock:
+        conn = _get_conn()
+        cursor = conn.execute("DELETE FROM cases WHERE case_id = ?", (case_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        return deleted
 
 def list_cases(
     status: CaseStatus | None = None,
@@ -171,7 +182,6 @@ def list_cases(
         rows = conn.execute(query, params).fetchall()
     return [Case.model_validate_json(row[0]) for row in rows]
 
-
 def count_cases(status: CaseStatus | None = None) -> int:
     """Count cases, optionally filtered by status."""
     query = "SELECT COUNT(*) FROM cases WHERE 1=1"
@@ -184,7 +194,6 @@ def count_cases(status: CaseStatus | None = None) -> int:
         conn = _get_conn()
         row = conn.execute(query, params).fetchone()
     return row[0] if row else 0
-
 
 def update_case_status(case_id: str, new_status: CaseStatus, doctor_thread_id: str | None = None) -> Case | None:
     """Transition a case to a new status."""
@@ -205,7 +214,6 @@ def update_case_status(case_id: str, new_status: CaseStatus, doctor_thread_id: s
         )
         conn.commit()
     return case
-
 
 def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest) -> Case | None:
     """Submit a doctor's diagnosis and transition the case to 'diagnosed'.
@@ -237,7 +245,6 @@ def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest) -> Case | None:
         conn.commit()
     return case
 
-
 def add_evidence(case_id: str, req: AddEvidenceRequest) -> Case | None:
     """Append an evidence item to a case."""
     case = get_case(case_id)
@@ -268,7 +275,6 @@ def add_evidence(case_id: str, req: AddEvidenceRequest) -> Case | None:
         conn.commit()
     return case
 
-
 def update_evidence_data(case_id: str, evidence_id: str, updates: dict) -> Case | None:
     """Update specific fields of an existing evidence item within a case."""
     case = get_case(case_id)
@@ -295,7 +301,6 @@ def update_evidence_data(case_id: str, evidence_id: str, updates: dict) -> Case 
             conn.commit()
     return case
 
-
 def remove_evidence(case_id: str, evidence_id: str) -> Case | None:
     """Remove an evidence item from a case by its ID."""
     case = get_case(case_id)
@@ -318,12 +323,11 @@ def remove_evidence(case_id: str, evidence_id: str) -> Case | None:
         conn.commit()
     return case
 
-
 def update_patient_info(thread_id: str, info_dict: dict) -> Case | None:
     """Update patient info on an existing Case. Returns None if no Case exists.
     
     [ADR-020] No longer auto-creates a Case. Case creation is exclusively
-    handled by the schedule_appointment tool when the patient confirms.
+    handled by the frontend appointment confirmation flow when the patient confirms.
     """
     target_case = get_case_by_thread(thread_id)
     
@@ -346,7 +350,6 @@ def update_patient_info(thread_id: str, info_dict: dict) -> Case | None:
         )
         conn.commit()
     return target_case
-
 
 def update_patient_info_by_case(case_id: str, info_dict: dict) -> Case | None:
     """Update patient info on an existing Case by case_id (doctor-side).
@@ -374,11 +377,10 @@ def update_patient_info_by_case(case_id: str, info_dict: dict) -> Case | None:
         conn.commit()
     return case
 
-
 def get_case_by_thread(thread_id: str) -> Case | None:
     """Find the active Case for a given patient thread_id.
     
-    Used by route guards and the schedule_appointment tool to check
+    Used by route guards and the appointment confirmation flow to check
     whether a formal Case already exists for this conversation thread.
     """
     with _lock:
@@ -391,7 +393,6 @@ def get_case_by_thread(thread_id: str) -> Case | None:
         return Case.model_validate_json(row[0])
     return None
 
-
 def update_case_evidence_from_report(thread_id: str, report_id: str, doctor_result: dict) -> bool:
     """Sync the doctor's review back to the macro Case.evidence array."""
     target_case = get_case_by_thread(thread_id)
@@ -401,13 +402,16 @@ def update_case_evidence_from_report(thread_id: str, report_id: str, doctor_resu
         
     updated = False
     for item in target_case.evidence:
-        if item.evidence_id == report_id:
-            # Reconstruct the structured data from the doctor result
-            if item.structured_data is None:
+        structured = item.structured_data if isinstance(item.structured_data, dict) else {}
+        linked_report_id = structured.get("report_id")
+        if item.evidence_id == report_id or linked_report_id == report_id:
+            if item.structured_data is None or not isinstance(item.structured_data, dict):
                 item.structured_data = {}
-            # Update specific keys from doctor_result
+            item.structured_data.setdefault("report_id", report_id)
             item.structured_data.update(doctor_result)
+            item.structured_data["status"] = str(doctor_result.get("status") or "reviewed")
             updated = True
+            break
             
     if updated:
         target_case.updated_at = datetime.now(timezone.utc)
@@ -420,7 +424,6 @@ def update_case_evidence_from_report(thread_id: str, report_id: str, doctor_resu
             conn.commit()
         return True
     return False
-
 
 def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest) -> Case | None:
     """Submit doctor's diagnosis and transition case to 'diagnosed'."""
@@ -448,7 +451,6 @@ def submit_diagnosis(case_id: str, req: SubmitDiagnosisRequest) -> Case | None:
         conn.commit()
     logger.info(f"Diagnosis submitted for case {case_id}")
     return case
-
 
 def get_stats() -> dict:
     """Aggregate statistics for the doctor dashboard."""
@@ -498,7 +500,6 @@ def get_stats() -> dict:
         "top_diagnoses": [{"name": k, "count": v} for k, v in top_diagnoses],
     }
 
-
 # ── Rerports & HITL Audit ─────────────────────────────────
 
 def sync_report_from_file(thread_id: str, file_path: Path) -> dict | None:
@@ -518,17 +519,28 @@ def sync_report_from_file(thread_id: str, file_path: Path) -> dict | None:
         
         with _lock:
             conn = _get_conn()
-            # Insert if not exists
+            existing = conn.execute(
+                "SELECT created_at FROM reports WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()
+            created_at = existing[0] if existing else now_str
             conn.execute(
                 """
-                INSERT OR IGNORE INTO reports 
+                INSERT INTO reports 
                 (report_id, patient_thread_id, image_path, ai_result, doctor_result, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_id) DO UPDATE SET
+                    patient_thread_id = excluded.patient_thread_id,
+                    image_path = excluded.image_path,
+                    ai_result = excluded.ai_result,
+                    doctor_result = excluded.doctor_result,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
                 """,
-                (report_id, thread_id, image_path, ai_result_str, doc_result_str, status, now_str, now_str)
+                (report_id, thread_id, image_path, ai_result_str, doc_result_str, status, created_at, now_str)
             )
             conn.commit()
-            
+
             row = conn.execute("SELECT ai_result, doctor_result, status FROM reports WHERE report_id = ?", (report_id,)).fetchone()
             
         return {
@@ -594,6 +606,12 @@ def update_report(report_id: str, doctor_result: dict, doctor_id: str = "unknown
     existing_report = get_report_by_id(report_id)
     if not existing_report:
         return None
+
+    merged_doctor_result = {
+        **(existing_report.get("ai_result") if isinstance(existing_report.get("ai_result"), dict) else {}),
+        **(existing_report.get("doctor_result") if isinstance(existing_report.get("doctor_result"), dict) else {}),
+        **doctor_result,
+    }
         
     # Capture old value for audit snapshot
     old_value = existing_report["doctor_result"] if existing_report.get("doctor_result") else existing_report["ai_result"]
@@ -601,7 +619,7 @@ def update_report(report_id: str, doctor_result: dict, doctor_id: str = "unknown
     
     now_str = datetime.now(timezone.utc).isoformat()
     old_value_str = json.dumps(old_value, ensure_ascii=False)
-    new_value_str = json.dumps(doctor_result, ensure_ascii=False)
+    new_value_str = json.dumps(merged_doctor_result, ensure_ascii=False)
     
     with _lock:
         conn = _get_conn()

@@ -1,6 +1,7 @@
 """Registry for pluggable image analysis tools."""
 
 from dataclasses import dataclass
+from typing import Any
 from typing import Awaitable, Callable, Protocol
 
 
@@ -14,7 +15,7 @@ class AnalysisResult:
     evidence_type: str               # e.g., 'lab', 'imaging', 'note'
     evidence_title: str
     ai_analysis_text: str | None = None  # Markdown string (OCR or VLM description)
-    structured_data: dict | None = None  # JSON findings (e.g., YOLO bounding boxes)
+    structured_data: dict[str, Any] | None = None  # Raw findings plus optional triage contract
     is_abnormal: bool = False
     error: str | None = None
     enhanced_file_path: str | None = None # Path to enhanced image if applicable

@@ -1,24 +1,22 @@
 "use client";
 
-import { useCallback } from "react";
-import Link from "next/link";
+import { FileText } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
-import { ArtifactTrigger } from "@/components/workspace/artifacts";
+import { type AppointmentPreviewData } from "@/components/workspace/AppointmentPreview";
 import {
   ChatBox,
   useSpecificChatMode,
   useThreadChat,
 } from "@/components/workspace/chats";
-import { ExportTrigger } from "@/components/workspace/export-trigger";
 import { InputBox } from "@/components/workspace/input-box";
+import { MedicalRecordDialog } from "@/components/workspace/MedicalRecordDrawer";
 import { MessageList } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
-import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
-import { ClipboardList } from "lucide-react";
 import { useI18n } from "@/core/i18n/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings } from "@/core/settings";
@@ -26,6 +24,8 @@ import { useThreadStream } from "@/core/threads/hooks";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
+
+import { extractLatestAppointmentPreview } from "./page.orchestration";
 
 export default function ChatPage() {
   const { t } = useI18n();
@@ -36,13 +36,18 @@ export default function ChatPage() {
 
   const { showNotification } = useNotification();
 
+  const [medicalRecordOpen, setMedicalRecordOpen] = useState(false);
+  const [appointmentPreviewData, setAppointmentPreviewData] =
+    useState<AppointmentPreviewData | null>(null);
+  const latestAppointmentPreviewSourceIdRef = useRef<string | null>(null);
+  const initializedThreadIdRef = useRef(false);
+
   const [thread, sendMessage, isUploading] = useThreadStream({
     threadId: isNewThread ? undefined : threadId,
     context: settings.context,
     isMock,
     onStart: () => {
       setIsNewThread(false);
-      // ! Important: Never use next.js router for navigation in this case, otherwise it will cause the thread to re-mount and lose all states. Use native history API instead.
       history.replaceState(null, "", `/workspace/chats/${threadId}`);
     },
     onFinish: (state) => {
@@ -69,11 +74,55 @@ export default function ChatPage() {
     },
     [sendMessage, threadId],
   );
+
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
 
-  // [Phase7] handleReJudge 已移至医生端 Dashboard
+  useEffect(() => {
+    const latestPreview = extractLatestAppointmentPreview(thread.messages);
+    const nextPreview = latestPreview?.data.thread_id === threadId ? latestPreview : null;
+
+    if (
+      nextPreview &&
+      nextPreview.sourceMessageId !== latestAppointmentPreviewSourceIdRef.current
+    ) {
+      latestAppointmentPreviewSourceIdRef.current = nextPreview.sourceMessageId;
+      setAppointmentPreviewData(nextPreview.data);
+      setMedicalRecordOpen(true);
+    }
+  }, [thread.messages, threadId]);
+
+  useEffect(() => {
+    if (!initializedThreadIdRef.current) {
+      initializedThreadIdRef.current = true;
+      return;
+    }
+
+    latestAppointmentPreviewSourceIdRef.current = null;
+    setAppointmentPreviewData(null);
+  }, [threadId]);
+
+  useEffect(() => {
+    const handleOpenMedicalRecord = (event: Event) => {
+      const customEvent = event as CustomEvent<{ threadId?: string }>;
+      if (customEvent.detail?.threadId && customEvent.detail.threadId !== threadId) {
+        return;
+      }
+      setMedicalRecordOpen(true);
+    };
+
+    window.addEventListener(
+      "medical-record:open",
+      handleOpenMedicalRecord as EventListener,
+    );
+    return () => {
+      window.removeEventListener(
+        "medical-record:open",
+        handleOpenMedicalRecord as EventListener,
+      );
+    };
+  }, [threadId]);
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -91,22 +140,20 @@ export default function ChatPage() {
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
             <div className="flex items-center gap-2">
-              <Link
-                href={`/workspace/status?thread_id=${threadId}`}
-                className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 hover:text-blue-600 transition-colors"
-                title="查看诊断进度"
+              <button
+                onClick={() => setMedicalRecordOpen(true)}
+                className="flex min-h-9 min-w-[84px] items-center gap-1.5 whitespace-nowrap rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100"
+                title="打开病例页面"
               >
-                <ClipboardList className="h-4 w-4" />
-              </Link>
-              <TokenUsageIndicator messages={thread.messages} />
-              <ExportTrigger threadId={threadId} />
-              <ArtifactTrigger />
+                <FileText className="h-3.5 w-3.5" />
+                病历单
+              </button>
             </div>
           </header>
           <main className="flex min-h-0 max-w-full grow flex-col">
-            <div className="flex size-full justify-center">
+            <div className={cn("flex size-full justify-center px-4", !isNewThread && "pt-14")}>
               <MessageList
-                className={cn("size-full", !isNewThread && "pt-10")}
+                className={cn("size-full", !isNewThread && "pt-2")}
                 threadId={threadId}
                 thread={thread}
               />
@@ -126,9 +173,7 @@ export default function ChatPage() {
                     <TodoList
                       className="bg-background/5"
                       todos={thread.values.todos ?? []}
-                      hidden={
-                        !thread.values.todos || thread.values.todos.length === 0
-                      }
+                      hidden={!thread.values.todos || thread.values.todos.length === 0}
                     />
                   </div>
                 </div>
@@ -137,17 +182,9 @@ export default function ChatPage() {
                   isNewThread={isNewThread}
                   threadId={threadId}
                   autoFocus={isNewThread}
-                  status={
-                    thread.error
-                      ? "error"
-                      : thread.isLoading
-                        ? "streaming"
-                        : "ready"
-                  }
+                  status={thread.error ? "error" : thread.isLoading ? "streaming" : "ready"}
                   context={settings.context}
-                  extraHeader={
-                    isNewThread && <Welcome mode={settings.context.mode} />
-                  }
+                  extraHeader={isNewThread && <Welcome mode={settings.context.mode} />}
                   disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" || isUploading}
                   onContextChange={(context) => setSettings("context", context)}
                   onSubmit={handleSubmit}
@@ -162,6 +199,13 @@ export default function ChatPage() {
             </div>
           </main>
         </div>
+        <MedicalRecordDialog
+          threadId={threadId}
+          open={medicalRecordOpen}
+          onClose={() => setMedicalRecordOpen(false)}
+          appointmentPreviewData={appointmentPreviewData}
+          onAppointmentConfirmed={() => setAppointmentPreviewData(null)}
+        />
       </ChatBox>
     </ThreadContext.Provider>
   );

@@ -1,30 +1,25 @@
 import json
-import logging
+from loguru import logger
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.core.models import create_chat_model
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["suggestions"])
-
 
 class SuggestionMessage(BaseModel):
     role: str = Field(..., description="Message role: user|assistant")
     content: str = Field(..., description="Message content as plain text")
-
 
 class SuggestionsRequest(BaseModel):
     messages: list[SuggestionMessage] = Field(..., description="Recent conversation messages")
     n: int = Field(default=3, ge=1, le=5, description="Number of suggestions to generate")
     model_name: str | None = Field(default=None, description="Optional model override")
 
-
 class SuggestionsResponse(BaseModel):
     suggestions: list[str] = Field(default_factory=list, description="Suggested follow-up questions")
-
 
 def _strip_markdown_code_fence(text: str) -> str:
     stripped = text.strip()
@@ -34,7 +29,6 @@ def _strip_markdown_code_fence(text: str) -> str:
     if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].startswith("```"):
         return "\n".join(lines[1:-1]).strip()
     return stripped
-
 
 def _parse_json_string_list(text: str) -> list[str] | None:
     candidate = _strip_markdown_code_fence(text)
@@ -59,7 +53,6 @@ def _parse_json_string_list(text: str) -> list[str] | None:
         out.append(s)
     return out
 
-
 def _extract_response_text(content: object) -> str:
     if isinstance(content, str):
         return content
@@ -77,7 +70,6 @@ def _extract_response_text(content: object) -> str:
         return ""
     return str(content)
 
-
 def _format_conversation(messages: list[SuggestionMessage]) -> str:
     parts: list[str] = []
     for m in messages:
@@ -89,7 +81,6 @@ def _format_conversation(messages: list[SuggestionMessage]) -> str:
         else:
             parts.append(f"{m.role}: {m.content.strip()}")
     return "\n".join(parts).strip()
-
 
 @router.post(
     "/threads/{thread_id}/suggestions",

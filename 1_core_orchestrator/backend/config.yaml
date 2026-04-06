@@ -198,7 +198,7 @@ tool_search:
 # Option 1: Local Sandbox (Default)
 # Executes commands directly on the host machine
 sandbox:
-  use: deerflow.sandbox.local:LocalSandboxProvider
+  use: app.core.sandbox.local:LocalSandboxProvider
 
 # Option 2: Container-based AIO Sandbox
 # Executes commands in isolated containers (Docker or Apple Container)

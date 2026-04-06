@@ -111,7 +111,8 @@ class Case(BaseModel):
 # ── API Request / Response schemas ─────────────────────────
 
 class CreateCaseRequest(BaseModel):
-    patient_thread_id: str
+    case_id: str | None = None               # 外部指定 case_id（患者端用 thread_id 统一）
+    patient_thread_id: str | None = None
     priority: Priority = Priority.MEDIUM
     patient_info: PatientInfo = Field(default_factory=PatientInfo)
     evidence: list[EvidenceItem] = Field(default_factory=list)

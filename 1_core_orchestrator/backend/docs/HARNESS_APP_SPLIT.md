@@ -187,7 +187,7 @@ def handle_status_command():
 | 命名空间 | 需要 pkgutil `extend_path` 合并，或独立前缀 | 天然独立，`app.*` vs `deerflow.*` |
 | 发布需求 | 没有——App 是项目内部代码 | 不需要 pyproject.toml |
 | 复杂度 | 需要管理两个包的构建、版本、依赖声明 | 直接运行，零额外配置 |
-| 运行方式 | `pip install deerflow-app` | `PYTHONPATH=. uvicorn app.gateway.app:app` |
+| 运行方式 | `pip install deerflow-app` | `PYTHONPATH=. uv run python -m uvicorn app.gateway.app:app` |
 
 App 的唯一消费者是 DeerFlow 项目自身，没有独立发布的需求。放在 `backend/app/` 下作为普通 Python 包，通过 `PYTHONPATH` 或 editable install 让 Python 找到即可。
 
@@ -287,7 +287,7 @@ LangGraph Server 只需要 harness 包。`langgraph.json` 更新：
 ```bash
 # serve.sh / Makefile
 # PYTHONPATH 包含 backend/ 根目录，使 app.* 和 deerflow.* 都能被找到
-PYTHONPATH=. uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
+PYTHONPATH=. uv run python -m uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
 ```
 
 ### 5.3 Nginx

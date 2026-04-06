@@ -1,8 +1,5 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { toast } from "sonner";
-import { getBackendBaseURL } from "@/core/config";
 import {
   BookOpen,
   Search,
@@ -17,27 +14,27 @@ import {
   Eye,
   MoreHorizontal,
   ChevronRight,
-  ChevronDown,
   X,
   Check,
   RefreshCw,
   Sparkles,
-  AlertCircle,
   Inbox,
   Zap,
   Clock,
-  ArrowRight,
   Send,
   Loader2,
   Copy,
-  ExternalLink,
   Hash,
 } from "lucide-react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
+import { toast } from "sonner";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
+import { getBackendBaseURL } from "@/core/config";
 import { cn } from "@/lib/utils";
 
 // ── Types ──────────────────────────────────────────────────
@@ -77,11 +74,70 @@ interface DocChunk {
   char_count: number;
 }
 
-interface FolderNode {
-  path: string;
-  name: string;
-  children: FolderNode[];
-  kbs: KnowledgeBase[];
+interface ApiKnowledgeBase {
+  kb_id: string;
+  chunk_count?: number;
+  created_at?: string;
+  description?: string;
+  display_name?: string;
+  doc_count?: number;
+  folder?: string;
+  tags?: string[];
+}
+
+interface ApiDocument {
+  chunk_count?: number;
+  doc_name: string;
+  uploaded_at?: string;
+}
+
+interface ApiKnowledgeBaseListResponse {
+  data?: {
+    knowledgebases?: ApiKnowledgeBase[];
+  };
+}
+
+interface ApiDocumentListResponse {
+  data?: {
+    documents?: ApiDocument[];
+  };
+}
+
+interface ApiHealthResponse {
+  data?: {
+    crag_enabled?: boolean;
+    graph_enabled?: boolean;
+    reranker_enabled?: boolean;
+  };
+}
+
+interface ApiRetrievalSource {
+  content?: string;
+  doc_name?: string;
+  id?: string;
+  relevance_score?: number;
+  source_type?: string;
+}
+
+interface ApiRetrievalResponse {
+  metadata?: {
+    crag_reason?: string;
+    crag_score?: number;
+    latency_ms?: number | null;
+  };
+  sources?: ApiRetrievalSource[];
+}
+
+interface ApiUploadResponse {
+  data?: {
+    chunks_indexed?: number;
+  };
+}
+
+interface ApiDeleteDocumentResponse {
+  data?: {
+    deleted_chunks?: number;
+  };
 }
 
 // ── Search mode labels ─────────────────────────────────────
@@ -99,6 +155,15 @@ function formatNumber(n: number): string {
   return String(n);
 }
 
+function mapDocuments(documents: ApiDocument[]): Document[] {
+  return documents.map((doc) => ({
+    chunk_count: doc.chunk_count ?? 0,
+    doc_name: doc.doc_name,
+    doc_type: doc.doc_name.split(".").pop(),
+    uploaded_at: doc.uploaded_at,
+  }));
+}
+
 // ── Components ─────────────────────────────────────────────
 
 /** Folder tree sidebar item */
@@ -113,7 +178,7 @@ function FolderItem({
   onClick: () => void;
   kbCount: number;
 }) {
-  const name = folder === "/" ? "全部知识库" : folder.split("/").pop() || folder;
+  const name = folder === "/" ? "全部知识库" : folder.split("/").pop() ?? folder;
   return (
     <button
       onClick={onClick}
@@ -182,7 +247,7 @@ function KBCard({
           <FileText className="h-3 w-3" /> {kb.doc_count} 文档
         </span>
         <span className="flex items-center gap-1">
-          <Layers className="h-3 w-3" /> {formatNumber(kb.chunk_count || 0)} 分块
+          <Layers className="h-3 w-3" /> {formatNumber(kb.chunk_count ?? 0)} 分块
         </span>
         {kb.created_at && (
           <span className="flex items-center gap-1">
@@ -211,7 +276,7 @@ function KBCard({
 function ChunkCard({ chunk, rank }: { chunk: RetrievalChunk; rank: number }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
-    navigator.clipboard.writeText(chunk.content);
+    void navigator.clipboard.writeText(chunk.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -257,12 +322,12 @@ export default function DoctorKnowledgePage() {
 
   // Core data
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
-  const [isLoadingKBs, setIsLoadingKBs] = useState(true);
+  const [, setIsLoadingKBs] = useState(true);
   const [activeFolder, setActiveFolder] = useState("/");
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [docs, setDocs] = useState<Document[]>([]);
-  const [isLoadingDocs, setIsLoadingDocs] = useState(false);
+  const [, setIsLoadingDocs] = useState(false);
   const [activeTab, setActiveTab] = useState<"docs" | "search" | "create">("docs");
 
   // Retrieval test
@@ -303,12 +368,13 @@ export default function DoctorKnowledgePage() {
     try {
       const res = await fetch(`${BASE}/api/knowledge/knowledgebase`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const kbs: KnowledgeBase[] = (data?.data?.knowledgebases || []).map((kb: any) => ({
+      const data = (await res.json()) as ApiKnowledgeBaseListResponse;
+      const rawKnowledgeBases = data.data?.knowledgebases ?? [];
+      const kbs: KnowledgeBase[] = rawKnowledgeBases.map((kb) => ({
         kb_id: kb.kb_id,
-        display_name: kb.display_name || kb.kb_id,
-        folder: kb.folder || "/",
-        doc_count: kb.doc_count || 0,
+        display_name: kb.display_name ?? kb.kb_id,
+        folder: kb.folder ?? "/",
+        doc_count: kb.doc_count ?? 0,
         chunk_count: kb.chunk_count,
         description: kb.description,
         tags: kb.tags,
@@ -326,43 +392,56 @@ export default function DoctorKnowledgePage() {
     }
   }, [BASE, selectedKB]);
 
-  useEffect(() => { loadKBs(); }, []);
+  useEffect(() => {
+    void loadKBs();
+  }, [loadKBs]);
 
   // ── Load documents when KB selected ──
   useEffect(() => {
-    if (!selectedKB) { setDocs([]); return; }
-    setIsLoadingDocs(true);
-    fetch(`${BASE}/api/knowledge/documents/${selectedKB.kb_id}`)
-      .then(r => r.json())
-      .then(d => {
-        setDocs((d?.data?.documents || []).map((doc: any) => ({
-          doc_name: doc.doc_name,
-          chunk_count: doc.chunk_count || 0,
-          doc_type: doc.doc_name?.split(".").pop(),
-          uploaded_at: doc.uploaded_at,
-        })));
-      })
-      .catch(e => { console.error("Failed to load docs:", e); setDocs([]); })
-      .finally(() => setIsLoadingDocs(false));
+    if (!selectedKB) {
+      setDocs([]);
+      return;
+    }
+
+    const loadDocuments = async () => {
+      setIsLoadingDocs(true);
+      try {
+        const res = await fetch(`${BASE}/api/knowledge/documents/${selectedKB.kb_id}`);
+        const data = (await res.json()) as ApiDocumentListResponse;
+        setDocs(mapDocuments(data.data?.documents ?? []));
+      } catch (e) {
+        console.error("Failed to load docs:", e);
+        setDocs([]);
+      } finally {
+        setIsLoadingDocs(false);
+      }
+    };
+
+    void loadDocuments();
   }, [BASE, selectedKB]);
 
   // ── RAGFlow health check ──
   useEffect(() => {
-    fetch(`${BASE}/api/knowledge/health`)
-      .then(r => r.json())
-      .then(d => {
+    const loadHealth = async () => {
+      try {
+        const res = await fetch(`${BASE}/api/knowledge/health`);
+        const data = (await res.json()) as ApiHealthResponse;
         setRagflowOnline(true);
         setRagflowFeatures({
-          graph: d?.data?.graph_enabled || false,
-          crag: d?.data?.crag_enabled || false,
-          reranker: d?.data?.reranker_enabled || false,
+          graph: data.data?.graph_enabled ?? false,
+          crag: data.data?.crag_enabled ?? false,
+          reranker: data.data?.reranker_enabled ?? false,
         });
-      })
-      .catch(() => setRagflowOnline(false));
+      } catch {
+        setRagflowOnline(false);
+      }
+    };
+
+    void loadHealth();
   }, [BASE]);
 
   // ── Load chunks for a doc preview ──
-  const loadChunks = useCallback(async (docName: string, page: number = 1) => {
+  const loadChunks = useCallback(async (docName: string, page = 1) => {
     if (!selectedKB) return;
     setPreviewLoading(true);
     setPreviewDoc(docName);
@@ -373,10 +452,16 @@ export default function DoctorKnowledgePage() {
         `${BASE}/api/knowledge/chunks/${selectedKB.kb_id}?doc_names=${encodeURIComponent(docName)}&page=${page}&page_size=20`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setPreviewChunks(data?.data?.chunks || []);
-      setPreviewTotalPages(data?.data?.total_pages || 1);
-      setPreviewTotal(data?.data?.total || 0);
+      const data = (await res.json()) as {
+        data?: {
+          chunks?: DocChunk[];
+          total?: number;
+          total_pages?: number;
+        };
+      };
+      setPreviewChunks(data.data?.chunks ?? []);
+      setPreviewTotalPages(data.data?.total_pages ?? 1);
+      setPreviewTotal(data.data?.total ?? 0);
     } catch (e) {
       console.error("Load chunks failed:", e);
       toast.error("加载分块失败");
@@ -397,8 +482,8 @@ export default function DoctorKnowledgePage() {
     const matchSearch =
       !searchQuery ||
       kb.display_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      kb.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      kb.tags?.some((t) => t.includes(searchQuery));
+      (kb.description?.toLowerCase().includes(searchQuery.toLowerCase()) ?? false) ||
+      (kb.tags?.some((t) => t.includes(searchQuery)) ?? false);
     return matchFolder && matchSearch;
   });
 
@@ -428,23 +513,23 @@ export default function DoctorKnowledgePage() {
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = (await res.json()) as ApiRetrievalResponse;
 
       // Map sources to chunks for display
-      const sources = data.sources || [];
+      const sources = data.sources ?? [];
       const results: RetrievalChunk[] = sources
-        .filter((s: any) => s.source_type !== "graph")
-        .map((s: any, i: number) => ({
-          chunk_id: s.id || `chunk_${i}`,
-          content: s.content || "",
-          doc_name: s.doc_name || "",
-          similarity: s.relevance_score || 0,
+        .filter((source) => source.source_type !== "graph")
+        .map((source, index) => ({
+          chunk_id: source.id ?? `chunk_${index}`,
+          content: source.content ?? "",
+          doc_name: source.doc_name ?? "",
+          similarity: source.relevance_score ?? 0,
         }));
 
       setRetrievalResults(results);
-      setSearchTime(data.metadata?.latency_ms || null);
+      setSearchTime(data.metadata?.latency_ms ?? null);
       if (data.metadata?.crag_score) {
-        setCragInfo({ score: data.metadata.crag_score, reason: data.metadata.crag_reason || "" });
+        setCragInfo({ score: String(data.metadata.crag_score), reason: data.metadata.crag_reason ?? "" });
       }
     } catch (e) {
       console.error("Retrieval failed:", e);
@@ -482,7 +567,7 @@ export default function DoctorKnowledgePage() {
       setNewKBName("");
       setNewKBDesc("");
       setNewKBFolder("/");
-      loadKBs();
+      await loadKBs();
     } catch (e) {
       console.error("Create KB failed:", e);
       toast.error("创建知识库失败");
@@ -505,7 +590,7 @@ export default function DoctorKnowledgePage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       toast.success(`知识库 "${displayName}" 已删除`);
       if (selectedKB?.kb_id === kbId) setSelectedKB(null);
-      loadKBs();
+      await loadKBs();
     } catch (e) {
       console.error("Delete KB failed:", e);
       toast.error("删除知识库失败");
@@ -515,14 +600,6 @@ export default function DoctorKnowledgePage() {
   }, [BASE, loadKBs, selectedKB]);
 
   // ── Upload document ──
-  const handleUpload = useCallback(async () => {
-    if (!selectedKB) {
-      toast.error("请先选择一个知识库");
-      return;
-    }
-    fileInputRef.current?.click();
-  }, [selectedKB]);
-
   const handleFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedKB) return;
@@ -536,15 +613,15 @@ export default function DoctorKnowledgePage() {
         body: formData,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      toast.success(`文档 "${file.name}" 上传成功，解析了 ${data?.data?.chunks_indexed || 0} 个分块`);
+      const data = (await res.json()) as ApiUploadResponse;
+      toast.success(`文档 "${file.name}" 上传成功，解析了 ${data.data?.chunks_indexed ?? 0} 个分块`);
       // Refresh docs and KB list
-      loadKBs();
+      await loadKBs();
       if (selectedKB) {
         const docsRes = await fetch(`${BASE}/api/knowledge/documents/${selectedKB.kb_id}`);
         if (docsRes.ok) {
-          const docsData = await docsRes.json();
-          setDocs(docsData?.data?.documents || []);
+          const docsData = (await docsRes.json()) as ApiDocumentListResponse;
+          setDocs(mapDocuments(docsData.data?.documents ?? []));
         }
       }
     } catch (e) {
@@ -565,16 +642,11 @@ export default function DoctorKnowledgePage() {
       await loadKBs();
       const docsRes = await fetch(`${BASE}/api/knowledge/documents/${selectedKB.kb_id}`);
       if (docsRes.ok) {
-        const d = await docsRes.json();
-        setDocs((d?.data?.documents || []).map((doc: any) => ({
-          doc_name: doc.doc_name,
-          chunk_count: doc.chunk_count || 0,
-          doc_type: doc.doc_name?.split(".").pop(),
-          uploaded_at: doc.uploaded_at,
-        })));
+        const data = (await docsRes.json()) as ApiDocumentListResponse;
+        setDocs(mapDocuments(data.data?.documents ?? []));
       }
       toast.success("同步完成");
-    } catch (e) {
+    } catch {
       toast.error("同步失败");
     } finally {
       setIsSyncing(false);
@@ -591,10 +663,10 @@ export default function DoctorKnowledgePage() {
         { method: "DELETE" }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      toast.success(`文档 "${docName}" 已删除 (${data?.data?.deleted_chunks || 0} 个分块)`);
+      const data = (await res.json()) as ApiDeleteDocumentResponse;
+      toast.success(`文档 "${docName}" 已删除 (${data.data?.deleted_chunks ?? 0} 个分块)`);
       setDocs(prev => prev.filter(d => d.doc_name !== docName));
-      loadKBs();
+      await loadKBs();
     } catch (e) {
       console.error("Delete doc failed:", e);
       toast.error("删除文档失败");
@@ -617,14 +689,14 @@ export default function DoctorKnowledgePage() {
       toast.success(`文件夹 "${newFolderName}" 创建成功`);
       setNewFolderName("");
       setIsCreatingFolder(false);
-      loadKBs();
+      await loadKBs();
     } catch (e) {
       console.error("Create folder failed:", e);
       toast.error("创建文件夹失败");
     }
   }, [newFolderName, activeFolder, BASE, loadKBs]);
 
-  const totalChunks = knowledgeBases.reduce((sum, kb) => sum + (kb.chunk_count || 0), 0);
+  const totalChunks = knowledgeBases.reduce((sum, kb) => sum + (kb.chunk_count ?? 0), 0);
   const totalDocs = knowledgeBases.reduce((sum, kb) => sum + kb.doc_count, 0);
 
   // Toggle a KB in the retrieval multi-select
@@ -684,7 +756,7 @@ export default function DoctorKnowledgePage() {
                   className="h-7 text-xs rounded-md flex-1"
                   autoFocus
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") handleCreateFolder();
+                    if (e.key === "Enter") void handleCreateFolder();
                     if (e.key === "Escape") { setIsCreatingFolder(false); setNewFolderName(""); }
                   }}
                 />
@@ -852,7 +924,7 @@ export default function DoctorKnowledgePage() {
                   <FileText className="h-3.5 w-3.5" /> {selectedKB.doc_count} 文档
                 </span>
                 <span className="flex items-center gap-1">
-                  <Layers className="h-3.5 w-3.5" /> {formatNumber(selectedKB.chunk_count || 0)} 分块
+                  <Layers className="h-3.5 w-3.5" /> {formatNumber(selectedKB.chunk_count ?? 0)} 分块
                 </span>
                 {selectedKB.created_at && (
                   <span className="flex items-center gap-1">
@@ -936,7 +1008,7 @@ export default function DoctorKnowledgePage() {
                     文档列表 ({docs.length})
                   </h3>
                   <div className="space-y-2">
-                    {docs.map((doc, idx) => (
+                    {docs.map((doc) => (
                       <div
                         key={doc.doc_name}
                         className="flex items-center gap-4 p-4 rounded-xl border border-slate-200 bg-white hover:shadow-sm transition-all group"
@@ -1136,7 +1208,7 @@ export default function DoctorKnowledgePage() {
                   {!isSearching && retrievalResults.length === 0 && retrievalQuery && (
                     <div className="flex flex-col items-center justify-center py-12 text-slate-400">
                       <Search className="h-10 w-10 mb-3 opacity-40" />
-                      <p className="text-sm font-medium">点击 "检索" 按钮开始搜索</p>
+                      <p className="text-sm font-medium">点击 &quot;检索&quot; 按钮开始搜索</p>
                     </div>
                   )}
 
@@ -1335,7 +1407,7 @@ export default function DoctorKnowledgePage() {
                               <span className="uppercase">{chunk.doc_type_kwd}</span>
                               <button
                                 onClick={() => {
-                                  navigator.clipboard.writeText(chunk.content_full);
+                                  void navigator.clipboard.writeText(chunk.content_full);
                                   toast.success("已复制分块内容");
                                 }}
                                 className="ml-auto flex items-center gap-1 text-blue-500 hover:text-blue-700 transition-colors"
@@ -1364,7 +1436,7 @@ export default function DoctorKnowledgePage() {
                     variant="outline"
                     size="sm"
                     disabled={previewPage <= 1 || previewLoading}
-                    onClick={() => loadChunks(previewDoc!, previewPage - 1)}
+                    onClick={() => loadChunks(previewDoc, previewPage - 1)}
                     className="rounded-lg h-8 text-xs"
                   >
                     上一页
@@ -1373,7 +1445,7 @@ export default function DoctorKnowledgePage() {
                     variant="outline"
                     size="sm"
                     disabled={previewPage >= previewTotalPages || previewLoading}
-                    onClick={() => loadChunks(previewDoc!, previewPage + 1)}
+                    onClick={() => loadChunks(previewDoc, previewPage + 1)}
                     className="rounded-lg h-8 text-xs"
                   >
                     下一页

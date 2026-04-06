@@ -148,7 +148,9 @@ async def schedule_appointment_tool(
         case_priority = priority_map.get(priority.lower(), Priority.MEDIUM)
 
         # ── Step 4: Create the formal Case (atomic) ──
+        # [ADR-037] case_id = thread_id，让患者端和医生端使用同一个 ID
         new_case = case_db.create_case(CreateCaseRequest(
+            case_id=thread_id,
             patient_thread_id=thread_id,
             priority=case_priority,
             patient_info=patient_info,

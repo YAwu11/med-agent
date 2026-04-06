@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "deerflow-harness",
+    "chardet>=5,<6",
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
     "python-multipart>=0.0.20",
@@ -17,11 +18,18 @@ dependencies = [
     "langgraph-sdk>=0.1.51",
     "markdown-to-mrkdwn>=0.3.1",
     "ruamel-yaml>=0.19.1",
-    "transformers>=5.3.0",
     "pillow>=12.1.1",
     "opencv-python-headless>=4.13.0.92",
+    "scikit-learn>=1.7.0",
     "tenacity>=9.1.2",
-    "torch>=2.11.0",
+    "transformers>=5.3.0",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "ultralytics>=8.4.30",
+    "segment-anything",
+    "torchxrayvision",
+    "loguru>=0.7.3",
+    "asgi-correlation-id>=4.3.4",
 ]
 
 [dependency-groups]

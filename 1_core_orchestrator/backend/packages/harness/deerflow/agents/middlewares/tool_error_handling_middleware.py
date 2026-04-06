@@ -11,13 +11,15 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from deerflow.runtime_errors import FatalToolExecutionError
+
 logger = logging.getLogger(__name__)
 
 _MISSING_TOOL_CALL_ID = "missing_tool_call_id"
 
 
 class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
-    """Convert tool exceptions into error ToolMessages so the run can continue."""
+    """Convert recoverable tool exceptions into ToolMessages and re-raise fatal ones."""
 
     def _build_error_message(self, request: ToolCallRequest, exc: Exception) -> ToolMessage:
         tool_name = str(request.tool_call.get("name") or "unknown_tool")
@@ -45,6 +47,13 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         except GraphBubbleUp:
             # Preserve LangGraph control-flow signals (interrupt/pause/resume).
             raise
+        except FatalToolExecutionError:
+            logger.exception(
+                "Fatal tool execution failure (sync): name=%s id=%s",
+                request.tool_call.get("name"),
+                request.tool_call.get("id"),
+            )
+            raise
         except Exception as exc:
             logger.exception("Tool execution failed (sync): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
             return self._build_error_message(request, exc)
@@ -60,6 +69,13 @@ class ToolErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         except GraphBubbleUp:
             # Preserve LangGraph control-flow signals (interrupt/pause/resume).
             raise
+        except FatalToolExecutionError:
+            logger.exception(
+                "Fatal tool execution failure (async): name=%s id=%s",
+                request.tool_call.get("name"),
+                request.tool_call.get("id"),
+            )
+            raise
         except Exception as exc:
             logger.exception("Tool execution failed (async): name=%s id=%s", request.tool_call.get("name"), request.tool_call.get("id"))
             return self._build_error_message(request, exc)
@@ -69,6 +85,7 @@ def _build_runtime_middlewares(
     *,
     include_uploads: bool,
     include_dangling_tool_call_patch: bool,
+    include_guardrails: bool,
     lazy_init: bool = True,
 ) -> list[AgentMiddleware]:
     """Build shared base middlewares for agent execution."""
@@ -82,9 +99,11 @@ def _build_runtime_middlewares(
     ]
 
     if include_uploads:
+        from deerflow.agents.middlewares.patient_record_middleware import PatientRecordMiddleware
         from deerflow.agents.middlewares.uploads_middleware import UploadsMiddleware
 
         middlewares.insert(1, UploadsMiddleware())
+        middlewares.insert(2, PatientRecordMiddleware())
 
     if include_dangling_tool_call_patch:
         from deerflow.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
@@ -94,37 +113,47 @@ def _build_runtime_middlewares(
     # Guardrail middleware (if configured)
     from deerflow.config.guardrails_config import get_guardrails_config
 
-    guardrails_config = get_guardrails_config()
-    if guardrails_config.enabled and guardrails_config.provider:
-        import inspect
+    if include_guardrails:
+        guardrails_config = get_guardrails_config()
+        if guardrails_config.enabled and guardrails_config.provider:
+            import inspect
 
-        from deerflow.guardrails.middleware import GuardrailMiddleware
-        from deerflow.reflection import resolve_variable
+            from deerflow.guardrails.middleware import GuardrailMiddleware
+            from deerflow.reflection import resolve_variable
 
-        provider_cls = resolve_variable(guardrails_config.provider.use)
-        provider_kwargs = dict(guardrails_config.provider.config) if guardrails_config.provider.config else {}
-        # Pass framework hint if the provider accepts it (e.g. for config discovery).
-        # Built-in providers like AllowlistProvider don't need it, so only inject
-        # when the constructor accepts 'framework' or '**kwargs'.
-        if "framework" not in provider_kwargs:
-            try:
-                sig = inspect.signature(provider_cls.__init__)
-                if "framework" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                    provider_kwargs["framework"] = "deerflow"
-            except (ValueError, TypeError):
-                pass
-        provider = provider_cls(**provider_kwargs)
-        middlewares.append(GuardrailMiddleware(provider, fail_closed=guardrails_config.fail_closed, passport=guardrails_config.passport))
+            provider_cls = resolve_variable(guardrails_config.provider.use)
+            provider_kwargs = dict(guardrails_config.provider.config) if guardrails_config.provider.config else {}
+            # Pass framework hint if the provider accepts it (e.g. for config discovery).
+            # Built-in providers like AllowlistProvider don't need it, so only inject
+            # when the constructor accepts 'framework' or '**kwargs'.
+            if "framework" not in provider_kwargs:
+                try:
+                    sig = inspect.signature(provider_cls.__init__)
+                    if "framework" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                        provider_kwargs["framework"] = "deerflow"
+                except (ValueError, TypeError):
+                    pass
+            provider = provider_cls(**provider_kwargs)
+            middlewares.append(GuardrailMiddleware(provider, fail_closed=guardrails_config.fail_closed, passport=guardrails_config.passport))
 
     middlewares.append(ToolErrorHandlingMiddleware())
     return middlewares
 
 
-def build_lead_runtime_middlewares(*, lazy_init: bool = True) -> list[AgentMiddleware]:
+def build_lead_runtime_middlewares(*, lazy_init: bool = True, profile: str | None = None) -> list[AgentMiddleware]:
     """Middlewares shared by lead agent runtime before lead-only middlewares."""
+    if profile == "patient_intake":
+        return _build_runtime_middlewares(
+            include_uploads=False,
+            include_dangling_tool_call_patch=True,
+            include_guardrails=False,
+            lazy_init=lazy_init,
+        )
+
     return _build_runtime_middlewares(
         include_uploads=True,
         include_dangling_tool_call_patch=True,
+        include_guardrails=True,
         lazy_init=lazy_init,
     )
 
@@ -134,5 +163,6 @@ def build_subagent_runtime_middlewares(*, lazy_init: bool = True) -> list[AgentM
     return _build_runtime_middlewares(
         include_uploads=False,
         include_dangling_tool_call_patch=False,
+        include_guardrails=True,
         lazy_init=lazy_init,
     )

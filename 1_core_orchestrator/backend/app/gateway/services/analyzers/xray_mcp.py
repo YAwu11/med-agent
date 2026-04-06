@@ -2,17 +2,22 @@
 
 import asyncio
 import json
-import logging
 import uuid
 from pathlib import Path
 
+from loguru import logger
+
+from app.core.config.paths import get_paths
 from app.gateway.services.analyzer_registry import AnalysisResult
 from app.gateway.services.vision_gateway import enhance_medical_imaging
-from app.core.config.paths import get_paths
 
-logger = logging.getLogger(__name__)
 
-async def _call_mcp_analyze(image_path: str, thread_id: str, original_filename: str) -> dict | None:
+async def _call_mcp_analyze(
+    image_path: str,
+    thread_id: str,
+    original_filename: str,
+    report_id: str | None = None,
+) -> tuple[dict | None, str | None]:
     from app.gateway.services.mcp_vision_client import analyze_xray
 
     logger.info(f"[ADR-026] Auto MCP Analysis started: {original_filename}")
@@ -28,17 +33,20 @@ async def _call_mcp_analyze(image_path: str, thread_id: str, original_filename: 
         return None
 
     # Write analysis result to sandbox for manual review cache
-    report_id = str(uuid.uuid4())[:8]
+    resolved_report_id = report_id or str(uuid.uuid4())[:8]
     paths = get_paths()
     reports_dir = paths.sandbox_user_data_dir(thread_id) / "imaging-reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    report_file = reports_dir / f"{report_id}.json"
+    report_file = reports_dir / f"{resolved_report_id}.json"
 
     report_data = {
-        "report_id": report_id,
+        "report_id": resolved_report_id,
         "thread_id": thread_id,
         "status": "pending_review",
         "image_path": image_path,
+        "source_upload_filename": original_filename,
+        "modality": "chest_xray_2d",
+        "viewer_kind": "imaging_bbox_review",
         "ai_result": result,
         "doctor_result": None,
     }
@@ -49,11 +57,10 @@ async def _call_mcp_analyze(image_path: str, thread_id: str, original_filename: 
 
     total_findings = result.get("summary", {}).get("total_findings", 0)
     logger.info(
-        f"[ADR-026] MCP Analysis complete: {original_filename} → report_id={report_id}, "
+        f"[ADR-026] MCP Analysis complete: {original_filename} → report_id={resolved_report_id}, "
         f"findings={total_findings}"
     )
-    return result
-
+    return result, resolved_report_id
 
 class XrayMCPAnalyzer:
     """Uses Local GPU YOLO + Segment Everything model."""
@@ -71,14 +78,18 @@ class XrayMCPAnalyzer:
         else:
              logger.warning(f"File missing, skipping enhancement: {image_path}")
 
-        result = await _call_mcp_analyze(image_path, thread_id, original_filename)
+        result, report_id = await _call_mcp_analyze(image_path, thread_id, original_filename)
         
         if result:
             findings = result.get("findings", result.get("summary", {}).get("findings", []))
             count = len(findings) if isinstance(findings, list) else result.get("summary", {}).get("total_findings", 0)
             structured = {
                 "mcp_status": "completed",
-                "findings_count": count
+                "findings_count": count,
+                "status": "pending_review",
+                "modality": "chest_xray_2d",
+                "viewer_kind": "imaging_bbox_review",
+                "report_id": report_id,
             }
         else:
             structured = None

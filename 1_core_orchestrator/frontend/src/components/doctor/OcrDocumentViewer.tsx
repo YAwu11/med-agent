@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { FileText } from "lucide-react";
+import { type FocusEvent, useEffect, useRef, useState } from "react";
+
 import { cn } from "@/lib/utils";
-import { FileText } from 'lucide-react';
 
 export type OcrBlockType = "title" | "text" | "table" | "figure" | "formula";
 
@@ -12,20 +13,26 @@ export interface OcrBaseBlock {
 
 export interface OcrTitleBlock extends OcrBaseBlock {
   type: "title";
-  res: { text: string; [key: string]: any } | string;
+  res: { text: string; [key: string]: unknown } | string;
 }
 
 export interface OcrTextBlock extends OcrBaseBlock {
   type: "text";
-  res: { text: string; [key: string]: any } | string;
+  res: { text: string; [key: string]: unknown } | string;
 }
 
 export interface OcrTableBlock extends OcrBaseBlock {
   type: "table";
-  res: { html?: string; text?: string; cells?: any[]; [key: string]: any } | string;
+  res: { html?: string; text?: string; cells?: unknown[]; [key: string]: unknown } | string;
 }
 
-export type OcrBlock = OcrTitleBlock | OcrTextBlock | OcrTableBlock | OcrBaseBlock;
+export interface OcrUnknownBlock extends OcrBaseBlock {
+  type: "figure" | "formula";
+  res?: unknown;
+}
+
+export type OcrBlock = OcrTitleBlock | OcrTextBlock | OcrTableBlock | OcrUnknownBlock;
+type EditableOcrBlock = OcrTitleBlock | OcrTextBlock | OcrTableBlock;
 
 interface OcrDocumentViewerProps {
   blocks: OcrBlock[];
@@ -35,10 +42,13 @@ interface OcrDocumentViewerProps {
 }
 
 export function OcrDocumentViewer({ blocks, title, className, onChange }: OcrDocumentViewerProps) {
-  const handleBlockChange = (index: number, newValue: any, key: "text" | "html") => {
+  const handleBlockChange = (index: number, newValue: string, key: "text" | "html") => {
     if (!onChange) return;
     const newBlocks = [...blocks];
-    const target = newBlocks[index] as any;
+    const target = newBlocks[index];
+    if (!target || !hasEditableRes(target)) {
+      return;
+    }
     
     // Create new res object to avoid direct mutation
     const currentRes = target.res;
@@ -60,7 +70,7 @@ export function OcrDocumentViewer({ blocks, title, className, onChange }: OcrDoc
                <FileText className="h-5 w-5" />
              </div>
              <div>
-               <h3 className="text-lg font-bold text-slate-800 tracking-tight">{title || "原始识别报告"}</h3>
+               <h3 className="text-lg font-bold text-slate-800 tracking-tight">{title ?? "原始识别报告"}</h3>
                <p className="text-xs text-slate-500 font-medium tracking-wide">Structured OCR Document Flow (Editable)</p>
              </div>
            </div>
@@ -88,11 +98,15 @@ export function OcrDocumentViewer({ blocks, title, className, onChange }: OcrDoc
   );
 }
 
+function hasEditableRes(block: OcrBlock): block is EditableOcrBlock {
+  return "res" in block;
+}
+
 function OcrBlockRenderer({ block, index, onChange }: { block: OcrBlock; index: number, onChange: (val: string, key: "text" | "html") => void }) {
-  const resAny = (block as any).res;
+  const blockRes = hasEditableRes(block) ? block.res : undefined;
 
   if (block.type === "title") {
-    const text = typeof resAny === "string" ? resAny : resAny?.text || "";
+    const text = typeof block.res === "string" ? block.res : block.res.text ?? "";
     return (
       <div className={cn("group flex items-baseline gap-2", index > 0 ? "mt-12 mb-4" : "mb-6")}>
         <div className="w-1.5 h-5 bg-indigo-500 rounded-full shrink-0 self-center" />
@@ -107,7 +121,7 @@ function OcrBlockRenderer({ block, index, onChange }: { block: OcrBlock; index: 
   }
 
   if (block.type === "text") {
-    const text = typeof resAny === "string" ? resAny : resAny?.text || "";
+    const text = typeof block.res === "string" ? block.res : block.res.text ?? "";
     return (
       <EditableText 
         tagName="div" 
@@ -119,9 +133,9 @@ function OcrBlockRenderer({ block, index, onChange }: { block: OcrBlock; index: 
   }
 
   if (block.type === "table") {
-    const html = typeof resAny === "string" ? "" : resAny?.html;
+    const html = typeof block.res === "string" ? "" : block.res.html ?? "";
     if (!html) {
-      const fallbackText = typeof resAny === "string" ? resAny : resAny?.text || "[解析异常表格]";
+      const fallbackText = typeof block.res === "string" ? block.res : block.res.text ?? "[解析异常表格]";
       return <div className="text-sm text-slate-500 italic pl-3.5 border-l-2 border-slate-200 my-4">{fallbackText}</div>;
     }
 
@@ -143,38 +157,52 @@ function OcrBlockRenderer({ block, index, onChange }: { block: OcrBlock; index: 
   // Fallback for unknown block types
   return (
     <div className="text-xs text-slate-400 font-mono p-3 bg-slate-50 rounded border border-slate-100 break-all my-2">
-       [Unknown Block Type: {block.type}] {JSON.stringify(resAny).substring(0, 100)}...
+       [Unknown Block Type: {block.type}] {JSON.stringify(blockRes).substring(0, 100)}...
     </div>
   );
 }
 
 // ── Isolated ContentEditable Components (ADR Compliant) ────────
 
-function EditableText({ tagName, html, className, onChange }: { tagName: any; html: string; className: string; onChange: (text: string) => void }) {
-  const ref = useRef<HTMLElement>(null);
+function EditableText({ tagName, html, className, onChange }: { tagName: "h2" | "div"; html: string; className: string; onChange: (text: string) => void }) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const divRef = useRef<HTMLDivElement>(null);
   
   const handleBlur = () => {
-    if (!ref.current) return;
-    const currentText = ref.current.innerText || "";
+    const currentElement = tagName === "h2" ? headingRef.current : divRef.current;
+    if (!currentElement) return;
+    const currentText = currentElement.innerText ?? "";
     if (currentText !== html) {
       onChange(currentText);
     }
   };
-
-  const Tag = tagName as any;
   
   // Only dangerously set it once, let the DOM handle the rest unless html prop totally changes from a different evidence pick
   const [internalHtml, setInternalHtml] = useState(html);
   useEffect(() => {
     // Only update if it significantly diverged (e.g. switching tabs). Prevents SSE bouncing cursor.
-    if (ref.current && ref.current.innerText !== html) {
+    const currentElement = tagName === "h2" ? headingRef.current : divRef.current;
+    if (currentElement && currentElement.innerText !== html) {
       setInternalHtml(html);
     }
-  }, [html]);
+  }, [html, tagName]);
+
+  if (tagName === "h2") {
+    return (
+      <h2
+        ref={headingRef}
+        contentEditable
+        suppressContentEditableWarning
+        className={className}
+        onBlur={handleBlur}
+        dangerouslySetInnerHTML={{ __html: internalHtml }}
+      />
+    );
+  }
 
   return (
-    <Tag
-      ref={ref}
+    <div
+      ref={divRef}
       contentEditable
       suppressContentEditableWarning
       className={className}
@@ -195,7 +223,7 @@ function EditableTableBlock({ html, onChange }: { html: string, onChange: (newHt
     // A heuristic: if the outerHTML of the current table differs drastically from `html`
     // (e.g. switching tabs or a major backend refresh), update it.
     // If it's just a debounce loopback, ignore it so cursor stays put.
-    const currentLiveHtml = containerRef.current.querySelector('table')?.outerHTML || "";
+    const currentLiveHtml = containerRef.current.querySelector("table")?.outerHTML ?? "";
     // Normalize string lengths roughly to detect a completely new table vs minor local edit
     if (Math.abs(currentLiveHtml.length - html.length) > 50 || currentLiveHtml === "") {
       setInternalHtml(html);
@@ -222,10 +250,10 @@ function EditableTableBlock({ html, onChange }: { html: string, onChange: (newHt
     });
   }, [internalHtml]); // Re-run when we reset internalHtml
 
-  const handleBlur = (e: React.FocusEvent) => {
+  const handleBlur = (e: FocusEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
     // Don't trigger save if navigating between cells in the same table
-    if (containerRef.current.contains(e.relatedTarget as Node)) return;
+    if (e.relatedTarget instanceof Node && containerRef.current.contains(e.relatedTarget)) return;
 
     const tableEl = containerRef.current.querySelector("table");
     if (!tableEl) return;

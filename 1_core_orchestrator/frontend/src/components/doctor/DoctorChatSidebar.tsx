@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
 import { Stethoscope } from "lucide-react";
+import { useCallback, useEffect } from "react";
+
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import {
   ChatBox,
@@ -27,22 +28,29 @@ interface DoctorChatSidebarProps {
   onPendingMessageConsumed?: () => void;
 }
 
-export function DoctorChatSidebar({ threadId: initialThreadId, pendingMessage, onPendingMessageConsumed }: DoctorChatSidebarProps) {
+export function DoctorChatSidebar({ threadId: _initialThreadId, pendingMessage, onPendingMessageConsumed }: DoctorChatSidebarProps) {
   const { t } = useI18n();
   const [settings, setSettings] = useLocalSettings();
 
-  const { threadId, isNewThread, setIsNewThread, isMock } = useThreadChat();
+  // 仅获取 isMock 以供预览或调试模式使用
+  const { isMock } = useThreadChat();
+  const isNewThread = false; // 不做新线程特殊 UI 显示
   useSpecificChatMode();
 
   const { showNotification } = useNotification();
 
+  // 将 threadId 置为 undefined，迫使 useStream 把这里当成一次性新会话：
+  // 1. 避免向 LangGraph Server 传入无效格式（422报错）
+  // 2. 避免前端在组件渲染时立刻获取一个根本没创建的 UUID（404报错）
+  // 3. 当首次 submit 消息时，底层的 useStream 会自动生成并真正创建一个新线程。
+  const threadId = undefined as unknown as string; // 声明为 undefined 并绕过 TS 检查，供下方 deps 和 message 使用
+
   const [thread, sendMessage, isUploading] = useThreadStream({
-    threadId: isNewThread ? undefined : threadId,
+    threadId,
     context: settings.context,
     isMock,
     onStart: () => {
-      setIsNewThread(false);
-      history.replaceState(null, "", `/doctor/chat/${threadId}`);
+      // 不要修改路由，保持页面的 /doctor/chat/[id] 不变
     },
     onFinish: (state) => {
       if (document.hidden || !document.hasFocus()) {

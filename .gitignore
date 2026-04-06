@@ -22,6 +22,16 @@ temp/
 memory.json
 .deer-flow/
 .DS_Store
+desktop.ini
+1_core_orchestrator/data/*.db
+1_core_orchestrator/data/*.db-shm
+1_core_orchestrator/data/*.db-wal
+1_core_orchestrator/backend/test_out.txt
+1_core_orchestrator/diff.txt
+1_core_orchestrator/debug/
+1_core_orchestrator/frontend/debug/
+3_mcp_medical_vision/logs/
+3_mcp_medical_vision/brain_tumor_pipeline/models/
 
 # IDEs
 .vscode/
@@ -31,3 +41,6 @@ memory.json
 *.njsproj
 *.sln
 *.sw?
+
+# Local git worktrees
+.worktrees/

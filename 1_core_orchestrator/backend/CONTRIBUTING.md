@@ -61,7 +61,12 @@ make dev
 
 # Terminal 2: Gateway API
 make gateway
+
+# Windows-safe direct command
+PYTHONPATH=. uv run python -m uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
 ```
+
+If Windows application control blocks the `uvicorn` console entrypoint, use the module form above. The `make gateway` target now does the same internally.
 
 ## Project Structure
 

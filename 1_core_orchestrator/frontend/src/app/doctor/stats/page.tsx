@@ -1,19 +1,17 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
 import {
-  BarChart3,
   TrendingUp,
   Users,
   Clock,
   AlertTriangle,
   CheckCircle2,
   Activity,
-  ImageIcon,
-  FileText,
   Zap,
   HeartPulse,
 } from "lucide-react";
+import React, { useEffect, useState } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -200,7 +198,7 @@ export default function DoctorStatsPage() {
                     label={`${idx + 1}. ${d.name}`}
                     value={d.count}
                     max={maxDiagCount}
-                    color={["bg-blue-500", "bg-green-500", "bg-amber-500", "bg-purple-500", "bg-red-400"][idx] || "bg-slate-400"}
+                    color={["bg-blue-500", "bg-green-500", "bg-amber-500", "bg-purple-500", "bg-red-400"][idx] ?? "bg-slate-400"}
                   />
                 ))}
               </div>

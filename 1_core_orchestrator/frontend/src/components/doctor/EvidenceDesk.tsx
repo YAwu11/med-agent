@@ -1,18 +1,47 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import {
+  Activity,
+  CheckCircle2,
+  ChevronDown,
+  Circle,
+  ClipboardCheck,
+  FileText,
+  Image as ImageIcon,
+  Loader2,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  User,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
-import { cn } from "@/lib/utils";
-import { ShieldCheck, User, Image as ImageIcon, FileText, Activity, Loader2, CheckCircle2, Circle, Plus, Sparkles, Trash2, Pencil, Eye, Columns2, AlignJustify, ChevronDown, ClipboardCheck } from "lucide-react";
+import {
+  type ChangeEvent,
+  type DragEvent,
+  type ElementType,
+  type MouseEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { toast } from "sonner";
+
+import { BrainSpatialReview, type SpatialInfo } from "@/components/doctor/BrainSpatialReview";
+import { ImagingViewer, type McpAnalysisResult } from "@/components/doctor/ImagingViewer";
+import { LabMarkdownViewer, type LabValueWarning } from "@/components/doctor/LabMarkdownViewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { fetchCase, type CaseData } from "@/core/api/cases";
-import { ImagingViewer } from "@/components/doctor/ImagingViewer";
-import { Streamdown } from "streamdown";
-import { streamdownPlugins } from "@/core/streamdown";
-import { LabMarkdownViewer } from "@/components/doctor/LabMarkdownViewer";
-import { toast } from "sonner";
+import {
+  type EvidenceItem,
+  fetchCase,
+  fetchCaseSummaryReadiness,
+  type CaseData,
+  type CaseSummaryReadiness,
+  type PatientInfo,
+} from "@/core/api/cases";
+import { cn } from "@/lib/utils";
 
 interface EvidenceDeskProps {
   activeTab: string;
@@ -20,7 +49,130 @@ interface EvidenceDeskProps {
   isReviewPassed: boolean;
   onReviewPass: () => void;
   caseId?: string | null;
-  onSynthesisDiagnosis?: (summaryText: string) => void;
+  onSynthesisDiagnosis?: () => void;
+}
+
+interface EvidenceDeskTab {
+  id: string;
+  label: string;
+  type: EvidenceItem["type"];
+  item?: EvidenceItem;
+}
+
+type NumericPatientField = {
+  [K in keyof PatientInfo]-?: NonNullable<PatientInfo[K]> extends number ? K : never;
+}[keyof PatientInfo];
+
+type PatientInfoDraft = {
+  [K in keyof PatientInfo]?: K extends NumericPatientField ? PatientInfo[K] | string : PatientInfo[K];
+};
+
+interface ImagingStructuredData extends Record<string, unknown> {
+  pipeline?: string;
+  spatial_info?: unknown;
+  slice_png_path?: string;
+  status?: string;
+  report_id?: string;
+  modality?: string;
+  viewer_kind?: string;
+  required_sequences?: string[];
+  detected_sequences?: string[];
+  missing_sequences?: string[];
+  ready_for_analysis?: boolean;
+  upload_mode?: string;
+}
+
+interface LabStructuredData extends Record<string, unknown> {
+  ocr_raw_numbers?: string[];
+  value_warnings?: LabValueWarning[];
+}
+
+const BRAIN_MRI_REQUIRED_SEQUENCES = ["t1", "t1ce", "t2", "flair"] as const;
+type BrainMriSequence = (typeof BRAIN_MRI_REQUIRED_SEQUENCES)[number];
+
+function isNiftiFilename(filename?: string | null): boolean {
+  return Boolean(filename && /\.nii(\.gz)?$/i.test(filename));
+}
+
+function detectBrainMriSequence(filename?: string | null): BrainMriSequence | null {
+  if (!filename) {
+    return null;
+  }
+
+  const lowerName = filename.toLowerCase();
+  const normalized = lowerName.replace(/\.nii(\.gz)?$/i, "").replace(/-/g, "_");
+  if (normalized.includes("flair")) {
+    return "flair";
+  }
+  if (normalized.includes("t1ce") || normalized.includes("t1c")) {
+    return "t1ce";
+  }
+  if (normalized.includes("t2")) {
+    return "t2";
+  }
+  if (normalized.includes("t1")) {
+    return "t1";
+  }
+  return null;
+}
+
+function deriveBrainMriUploadStatus(evidenceItems: EvidenceItem[]) {
+  const detectedSequences = new Set<BrainMriSequence>();
+  let readyForAnalysis: boolean | null = null;
+
+  for (const item of evidenceItems) {
+    const structured = item.structured_data as ImagingStructuredData | undefined;
+    const candidateName = item.file_path ?? item.title;
+    const sequence = isNiftiFilename(candidateName) ? detectBrainMriSequence(candidateName) : null;
+
+    if (sequence) {
+      detectedSequences.add(sequence);
+    }
+
+    if (structured?.pipeline !== "brain_nifti_v1") {
+      continue;
+    }
+
+    if (Array.isArray(structured.detected_sequences)) {
+      for (const value of structured.detected_sequences) {
+        if (BRAIN_MRI_REQUIRED_SEQUENCES.includes(value as BrainMriSequence)) {
+          detectedSequences.add(value as BrainMriSequence);
+        }
+      }
+    }
+
+    if (typeof structured.ready_for_analysis === "boolean") {
+      readyForAnalysis = structured.ready_for_analysis;
+    }
+  }
+
+  const orderedDetected = BRAIN_MRI_REQUIRED_SEQUENCES.filter((sequence) => detectedSequences.has(sequence));
+  const missingSequences = BRAIN_MRI_REQUIRED_SEQUENCES.filter((sequence) => !detectedSequences.has(sequence));
+
+  return {
+    detectedSequences: orderedDetected,
+    missingSequences,
+    readyForAnalysis: readyForAnalysis ?? missingSequences.length === 0,
+    hasAnyBrainSeries: orderedDetected.length > 0,
+  };
+}
+
+function parseIntegerInput(value: string): number | "" {
+  if (!value) {
+    return "";
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? "" : parsed;
+}
+
+function parseFloatInput(value: string): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(value);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewPass, caseId, onSynthesisDiagnosis }: EvidenceDeskProps) {
@@ -28,55 +180,74 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   
   // ── API Data State ──────────────────────────────────
   const [caseData, setCaseData] = useState<CaseData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [, setIsLoading] = useState(false);
+  const [summaryReadiness, setSummaryReadiness] =
+    useState<CaseSummaryReadiness | null>(null);
   
   // ── Local Edit State for Patient Info (Gap) ──────────
-  const [localInfo, setLocalInfo] = useState<any>({});
+  const [localInfo, setLocalInfo] = useState<PatientInfoDraft>({});
 
   useEffect(() => {
     if (!caseId) return;
-    setIsLoading(true);
-    fetchCase(caseId)
-      .then((data) => {
+
+    let disposed = false;
+
+    const syncCase = async (shouldSyncLocalInfo: boolean) => {
+      const [caseResult, readinessResult] = await Promise.allSettled([
+        fetchCase(caseId),
+        fetchCaseSummaryReadiness(caseId),
+      ]);
+
+      if (disposed) {
+        return;
+      }
+
+      if (caseResult.status === "fulfilled") {
+        const data = caseResult.value;
         setCaseData(data);
-        if (data?.patient_info) {
+        if (shouldSyncLocalInfo && data?.patient_info) {
           setLocalInfo(data.patient_info);
         }
-        // Auto-select first evidence tab if available
-        if (data.evidence.length > 0) {
-          onTabChange("vitals"); // Default to vitals overview
+        if (shouldSyncLocalInfo && data.evidence.length > 0) {
+          onTabChange("vitals");
         }
-      })
+      } else {
+        console.error("[EvidenceDesk] Failed to fetch initial case data:", caseResult.reason);
+      }
+
+      if (readinessResult.status === "fulfilled") {
+        setSummaryReadiness(readinessResult.value);
+      } else {
+        console.warn("[EvidenceDesk] Failed to fetch synthesis readiness:", readinessResult.reason);
+      }
+    };
+
+    setIsLoading(true);
+    void syncCase(true)
       .finally(() => setIsLoading(false));
 
     // Basic polling mechanism to keep evidence in sync, especially for patient uploads or async backend ops
     const pollInterval = setInterval(() => {
-      fetchCase(caseId)
-        .then((data) => {
-          setCaseData(data);
-          // ⚠️ Note: We do NOT overwrite localInfo here to avoid destroying doctor's active form context
-        })
-        .catch((err) => {
-          console.warn("[EvidenceDesk] Polling failed:", err);
-        });
+      void syncCase(false);
     }, 5000);
 
-    return () => clearInterval(pollInterval);
-  }, [caseId]);
+    return () => {
+      disposed = true;
+      clearInterval(pollInterval);
+    };
+  }, [caseId, onTabChange]);
 
   // Derive display values from API data or mock defaults
-  const patientName = caseData?.patient_info?.name ?? "张建国";
-  const patientAge = caseData?.patient_info?.age ?? 58;
-  const patientSex = caseData?.patient_info?.sex ?? "男";
   const evidenceItems = caseData?.evidence ?? [];
+  const brainMriUploadStatus = deriveBrainMriUploadStatus(evidenceItems);
 
   // Create dynamic ALL_TABS from evidence Items
-  const ALL_TABS: { id: string, label: string, type: string, item?: any }[] = [
+  const ALL_TABS: EvidenceDeskTab[] = [
     { id: "vitals", label: "基础体征与历史", type: "vitals" }
   ];
-  evidenceItems.forEach((ev: any, i: number) => {
+  evidenceItems.forEach((ev, i) => {
     ALL_TABS.push({
-      id: `ev_${ev.evidence_id || i}`,
+      id: `ev_${ev.evidence_id}`,
       label: ev.title || `附加数据 ${i+1}`,
       type: ev.type,
       item: ev
@@ -93,7 +264,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   };
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingEvidence, setIsUploadingEvidence] = useState(false);
-  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const isSynthesizing = false;
   const [isDragging, setIsDragging] = useState(false);
 
   // ── P0: 诊断表单状态 ──────────────────────────────────
@@ -108,27 +279,20 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   });
   const [diagnosisSubmitted, setDiagnosisSubmitted] = useState(false);
 
-  // [Gap④] 综合诊断：拉取聚合摘要 → 注入 AI Chat
-  const handleSynthesisDiagnosis = async () => {
+  // 综合诊断：触发父组件启动 SSE 流（不再前端拉摘要）
+  const handleSynthesisDiagnosis = () => {
     if (!caseId || !onSynthesisDiagnosis) return;
-    setIsSynthesizing(true);
-    try {
-      const { getBackendBaseURL } = await import("@/core/config");
-      const res = await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/summary`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      
-      const prompt = `请基于以下患者完整病历资料进行综合诊断分析，给出你的诊断意见、鉴别诊断、建议的进一步检查项目和初步治疗方案。\n\n---\n\n${data.summary}`;
-      onSynthesisDiagnosis(prompt);
-    } catch (err) {
-      console.error("[Gap④] Failed to fetch case summary:", err);
-    } finally {
-      setIsSynthesizing(false);
+
+    if (!summaryReadiness?.ready_for_synthesis) {
+      toast.warning(summaryReadiness?.status_text ?? "当前资料尚未准备完成，暂不能综合诊断。");
+      return;
     }
+
+    onSynthesisDiagnosis();
   };
 
   const uploadFiles = async (files: FileList | File[]) => {
-    const targetThreadId = caseData?.patient_thread_id || caseId;
+    const targetThreadId = caseData?.patient_thread_id ?? caseId;
     if (!files || files.length === 0 || !caseId || !targetThreadId) {
       console.warn("EvidenceDesk uploadFiles early return due to missing context", { files: files?.length, caseId, targetThreadId, caseData });
       return;
@@ -143,7 +307,10 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
         method: "POST",
         body: formData
       });
-      const uploadData = await uploadRes.json();
+      if (!uploadRes.ok) {
+        throw new Error(`Upload failed with status ${uploadRes.status}`);
+      }
+      await uploadRes.json();
       
       // 移除原有的手动 POST /evidence 逻辑，让后端的 _auto_sync_evidence 自动归档并提取 OCR 的动态标题
       
@@ -158,82 +325,84 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
     }
   };
 
-  const handleSidebarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const sidebarFileInputRef = useRef<HTMLInputElement | null>(null);
+  const brainMriFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleSidebarUpload = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {
-      uploadFiles(e.target.files);
+      void uploadFiles(e.target.files);
     }
     // refresh input so same file can be uploaded again if needed
     e.target.value = "";
   };
 
+  const handleBrainMriUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files ?? []);
+    const niftiFiles = selectedFiles.filter((file) => isNiftiFilename(file.name));
+
+    if (selectedFiles.length > 0 && niftiFiles.length === 0) {
+      toast.warning("脑 MRI 专用入口仅支持 .nii 或 .nii.gz 文件");
+      e.target.value = "";
+      return;
+    }
+
+    if (niftiFiles.length !== selectedFiles.length) {
+      toast.warning("已忽略非 NIfTI 文件，仅上传 .nii / .nii.gz");
+    }
+
+    if (niftiFiles.length > 0) {
+      void uploadFiles(niftiFiles);
+    }
+
+    e.target.value = "";
+  };
+
   // ── Drag & Drop Handlers ─────────────────────────────
   // 核心防止闪烁方案：外层容器负责开启拖拽，开启后由全屏的全覆盖遮罩接管所有后续事件
-  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    setIsDragging(true);
+    // 只有当拖拽内容包含文件时，才触发遮罩层（避免拖拽选中文本时触发）
+    if (e.dataTransfer.types?.includes("Files")) {
+      setIsDragging(true);
+    }
   };
   
   // onDragOver 在外层只做默认拦截，具体 drop 和 leave 交给 overlay 处理
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
   };
 
   // ── Patient Info Update Handler ────────────────────────
   // To avoid race conditions and keystroke blocking, we use local state and a delayed patch.
-  const syncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
-  const updatePatientInfo = async (field: string, value: string | number) => {
+  const updatePatientInfo = async <K extends keyof PatientInfo>(
+    field: K,
+    value: PatientInfoDraft[K] | "",
+  ) => {
     if (!caseId) return;
+
+    const normalizedValue = value === "" ? null : value;
     
     // Optimistic update locally
-    setLocalInfo((prev: any) => ({ ...prev, [field]: value }));
+    setLocalInfo((prev) => ({ ...prev, [field]: normalizedValue }));
 
     // Debounce the PATCH to backend (500ms)
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    syncTimeoutRef.current = setTimeout(async () => {
-      try {
-        const { getBackendBaseURL } = await import("@/core/config");
-        await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/patient-info`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [field]: value })
-        });
-      } catch (e) {
-        console.error("[Gap Update Patient Info] Failed:", e);
-      }
-    }, 500);
-  };
-
-  // ── Evidence Data Update Handler (HITL) ─────────────────
-  const evidenceSyncTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
-
-  const updateEvidenceData = async (evidenceId: string, newStructuredData: any[]) => {
-    if (!caseId) return;
-
-    // Optimistically update local caseData so the UI immediately reflects it
-    // Note: OcrDocumentViewer already handles its local state safely, but we need 
-    // caseData.evidence[i].structured_data to be updated so flipping tabs doesn't lose it.
-    setCaseData((prev: any) => {
-      if (!prev) return prev;
-      const updatedEvidence = prev.evidence.map((ev: any) => 
-        ev.evidence_id === evidenceId ? { ...ev, structured_data: newStructuredData } : ev
-      );
-      return { ...prev, evidence: updatedEvidence };
-    });
-
-    if (evidenceSyncTimeoutRef.current) clearTimeout(evidenceSyncTimeoutRef.current);
-    evidenceSyncTimeoutRef.current = setTimeout(async () => {
-      try {
-        const { getBackendBaseURL } = await import("@/core/config");
-        await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/evidence/${evidenceId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ structured_data: newStructuredData })
-        });
-        console.log(`[HITL Sync] Evidence ${evidenceId} auto-saved`);
-      } catch (e) {
-        console.error("[HITL Sync] Failed to update evidence:", e);
-      }
+    syncTimeoutRef.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const { getBackendBaseURL } = await import("@/core/config");
+          const payload = { [field]: normalizedValue };
+          await fetch(`${getBackendBaseURL()}/api/cases/${caseId}/patient-info`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+        } catch (e) {
+          console.error("[Gap Update Patient Info] Failed:", e);
+        }
+      })();
     }, 500);
   };
 
@@ -270,7 +439,9 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
       setDiagnosisSubmitted(true);
       onReviewPass();
       // 1.5 秒后自动返回队列
-      setTimeout(() => router.push("/doctor/queue"), 1500);
+      window.setTimeout(() => {
+        void router.push("/doctor/queue");
+      }, 1500);
     } catch (e) {
       console.error("Failed to submit diagnosis", e);
       toast.error("诊断提交失败，请重试");
@@ -282,8 +453,9 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   const allReviewed = ALL_TABS.every(t => reviewedTabs.has(t.id));
   
   const activeTabData = ALL_TABS.find(t => t.id === activeTab);
+  const activeEvidenceItem = activeTabData?.item;
   
-  const handleDeleteEvidence = async (e: React.MouseEvent, evidenceId: string) => {
+  const handleDeleteEvidence = async (e: MouseEvent, evidenceId: string) => {
     e.stopPropagation();
     if (!caseId) return;
     if (!confirm("确定要删除这项目前的文件吗？此操作无法撤销。")) return;
@@ -311,7 +483,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
   };
   
   // 提取一个公用的渲染左侧菜单按钮的小组件函数，保持代码整洁
-  const renderTab = (id: string, label: string, Icon: React.ElementType, isAlert = false, evidenceId?: string) => {
+  const renderTab = (id: string, label: string, Icon: ElementType, isAlert = false, evidenceId?: string) => {
     const isActive = activeTab === id;
     const isReviewed = reviewedTabs.has(id);
     return (
@@ -372,7 +544,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
             e.preventDefault();
             setIsDragging(false);
             if (e.dataTransfer.files?.length) {
-              uploadFiles(e.dataTransfer.files);
+              void uploadFiles(e.dataTransfer.files);
             }
           }}
         >
@@ -382,7 +554,7 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               <Plus className="h-12 w-12 text-blue-600" />
             </div>
             <h3 className="text-2xl font-bold text-slate-800 mb-3 tracking-tight">松开鼠标上传作为证据</h3>
-            <p className="text-slate-500 font-medium">支持拖入图片、PDF及电子病历文件</p>
+            <p className="text-slate-500 font-medium">支持拖入图片、PDF、电子病历和 .nii/.nii.gz 影像序列</p>
           </div>
         </div>
       )}
@@ -423,17 +595,73 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
 
         {/* File Upload Contextual Action */}
         <div className="px-3 py-4 border-t border-slate-200/60 bg-white/50 backdrop-blur mt-auto">
+          <div className="mb-3 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 via-white to-cyan-50 p-3 shadow-sm">
+            <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-blue-700">
+              <Sparkles className="h-3.5 w-3.5" />
+              脑 MRI 四序列引导
+            </div>
+            <p className="mt-2 text-[12px] leading-relaxed text-slate-600">
+              建议按 t1 / t1ce(t1c) / t2 / flair 命名，可分批上传；集齐后系统会进入 3D 分析链路。
+            </p>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              {BRAIN_MRI_REQUIRED_SEQUENCES.map((sequence) => {
+                const detected = brainMriUploadStatus.detectedSequences.includes(sequence);
+                return (
+                  <span
+                    key={sequence}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase",
+                      detected
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-slate-200 bg-white text-slate-500",
+                    )}
+                  >
+                    {sequence}
+                  </span>
+                );
+              })}
+            </div>
+
+            <div className="mt-3 flex items-start gap-2 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-600">
+              <ShieldCheck className={cn("mt-0.5 h-4 w-4 shrink-0", brainMriUploadStatus.readyForAnalysis ? "text-emerald-500" : "text-blue-500")} />
+              <div>
+                <p className="font-medium text-slate-700">
+                  {brainMriUploadStatus.readyForAnalysis
+                    ? "四序列已集齐，可以触发 3D 脑肿瘤分析。"
+                    : brainMriUploadStatus.hasAnyBrainSeries
+                      ? `当前仍缺少 ${brainMriUploadStatus.missingSequences.join(" / ")}`
+                      : "当前病例尚未收集到脑 MRI 序列。"}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  已识别：{brainMriUploadStatus.detectedSequences.length > 0 ? brainMriUploadStatus.detectedSequences.join(" / ") : "暂无"}
+                </p>
+              </div>
+            </div>
+          </div>
+
           <input
             type="file"
             id="sidebarFileSelect"
             className="hidden"
             multiple
+            ref={sidebarFileInputRef}
             onChange={handleSidebarUpload}
           />
+          <input
+            type="file"
+            id="brainMriFileSelect"
+            className="hidden"
+            multiple
+            accept=".nii,.nii.gz"
+            ref={brainMriFileInputRef}
+            onChange={handleBrainMriUpload}
+          />
+          <div className="space-y-2">
           <Button 
             variant="outline" 
             className="w-full justify-center gap-2 bg-white backdrop-blur border-blue-200 text-blue-600 hover:bg-blue-50 transition-all shadow-sm rounded-xl py-6"
-            onClick={() => document.getElementById('sidebarFileSelect')?.click()}
+            onClick={() => sidebarFileInputRef.current?.click()}
             disabled={isUploadingEvidence}
           >
             <span className="inline-flex h-4 w-4 items-center justify-center">
@@ -441,6 +669,17 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
             </span>
             <span>{isUploadingEvidence ? "上传中..." : "补充医疗附件"}</span>
           </Button>
+          <Button
+            className="w-full justify-center gap-2 rounded-xl bg-slate-900 py-6 text-white shadow-sm transition-all hover:bg-slate-800"
+            onClick={() => brainMriFileInputRef.current?.click()}
+            disabled={isUploadingEvidence}
+          >
+            <span className="inline-flex h-4 w-4 items-center justify-center">
+              {isUploadingEvidence ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+            </span>
+            <span>{isUploadingEvidence ? "上传中..." : "上传脑 MRI 四序列"}</span>
+          </Button>
+          </div>
         </div>
       </div>
 
@@ -448,10 +687,10 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
       <div className="flex-1 min-w-0 flex flex-col relative bg-slate-50/50">
         
         {/* 中心视野区 (Content Viewer) */}
-        <div className="flex-1 overflow-y-auto relative">
+        <div className="flex-1 overflow-y-auto relative bg-slate-50">
         
         {activeTab === "vitals" && (
-          <div className="animate-in fade-in duration-300 flex flex-col h-full p-8 max-w-7xl mx-auto w-full">
+          <div className="animate-in fade-in duration-300 flex flex-col h-full min-h-max p-6 max-w-7xl mx-auto w-full">
             <div className="flex items-center justify-between mb-6 shrink-0">
               <h2 className="text-2xl font-semibold tracking-tight text-slate-800">Patient Vitals & History</h2>
               <div className="text-xs font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full flex items-center gap-2 border border-blue-100">
@@ -469,54 +708,67 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                 {/* 装饰性背景 */}
                 <div className="absolute top-0 right-0 w-40 h-40 bg-gradient-to-br from-blue-50 to-transparent rounded-bl-full -z-10 opacity-70" />
                 
-                <div className="flex items-center gap-4 mb-8">
+                <div className="flex items-center gap-4 mb-6">
                   <div className="h-16 w-16 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 border-[3px] border-white shadow-md ring-1 ring-slate-100 shrink-0">
                      <User className="h-7 w-7" />
                   </div>
-                  <div className="flex flex-col">
+                  <div className="flex flex-col min-w-0">
                     <Input 
-                      className="p-0 h-auto border-none shadow-none text-xl font-bold tracking-tight text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal bg-transparent"
+                      className="p-0 h-auto border-none shadow-none text-xl font-bold tracking-tight text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal bg-transparent w-full truncate"
                       value={localInfo?.name ?? ""}
                       onChange={(e) => updatePatientInfo("name", e.target.value)}
                       placeholder="姓名未登记"
                     />
-                    <div className="flex items-center gap-1 text-sm text-slate-500 font-medium mt-0.5">
-                      <Input 
-                        className="w-12 h-5 p-0 border-none shadow-none focus-visible:ring-0 bg-transparent text-center"
-                        value={localInfo?.age ?? ""}
-                        onChange={(e) => updatePatientInfo("age", e.target.value ? parseInt(e.target.value) : "")}
-                        placeholder="--"
-                      />
-                      岁 · 
-                      <select 
-                        className="bg-transparent border-none focus:ring-0 text-slate-500 p-0 text-sm cursor-pointer"
-                        value={localInfo?.sex ?? ""}
-                        onChange={(e) => updatePatientInfo("sex", e.target.value)}
-                      >
-                        <option value="男">男性</option>
-                        <option value="女">女性</option>
-                        <option value="">未知</option>
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-2 mt-1.5">
-                       <span className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-bold text-slate-500 tracking-widest uppercase truncate max-w-[80px]" title={caseData?.case_id}>ID: {caseData?.case_id?.slice(0, 8) ?? "Pt-2941"}</span>
-                       <div className="flex items-center text-xs text-slate-500 font-medium">
-                         <Input 
-                            className="w-10 h-5 p-0 border-none shadow-none focus-visible:ring-0 bg-transparent text-right"
-                            value={localInfo?.height_cm ?? ""}
-                            onChange={(e) => updatePatientInfo("height_cm", e.target.value)}
-                            onBlur={(e) => updatePatientInfo("height_cm", parseFloat(e.target.value) || 0)}
-                            placeholder="--"
-                          />cm, 
-                         <Input 
-                            className="w-10 h-5 p-0 border-none shadow-none focus-visible:ring-0 bg-transparent text-right ml-1"
-                            value={localInfo?.weight_kg ?? ""}
-                            onChange={(e) => updatePatientInfo("weight_kg", e.target.value)}
-                            onBlur={(e) => updatePatientInfo("weight_kg", parseFloat(e.target.value) || 0)}
-                            placeholder="--"
-                          />kg
-                       </div>
-                    </div>
+                    <span className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-bold text-slate-500 tracking-widest uppercase truncate max-w-fit mt-1" title={caseData?.case_id}>
+                      ID: {caseData?.case_id?.slice(0, 8) ?? "Pt-2941"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mb-4 mt-auto">
+                  <div className="bg-white rounded-lg p-2.5 border border-slate-200 transition-colors focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-50 shadow-sm">
+                    <div className="text-[10px] text-slate-500 font-medium mb-1">年龄 (岁)</div>
+                    <Input 
+                      type="number" min="0" max="150" step="1"
+                      className="p-0 h-5 border-none shadow-none text-sm font-semibold text-slate-800 focus-visible:ring-0 bg-transparent"
+                      value={localInfo?.age ?? ""}
+                      onChange={(e) => updatePatientInfo("age", parseIntegerInput(e.target.value))}
+                      placeholder="未输入"
+                    />
+                  </div>
+                  <div className="bg-white rounded-lg p-2.5 border border-slate-200 transition-colors focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-50 shadow-sm relative">
+                    <div className="text-[10px] text-slate-500 font-medium mb-1">性别</div>
+                    <select 
+                      className="w-full bg-transparent border-none focus:ring-0 text-slate-800 text-sm font-semibold p-0 appearance-none outline-none cursor-pointer h-5"
+                      value={localInfo?.sex ?? ""}
+                      onChange={(e) => updatePatientInfo("sex", e.target.value)}
+                    >
+                      <option value="男">男性</option>
+                      <option value="女">女性</option>
+                      <option value="">未知</option>
+                    </select>
+                  </div>
+                  <div className="bg-white rounded-lg p-2.5 border border-slate-200 transition-colors focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-50 shadow-sm">
+                    <div className="text-[10px] text-slate-500 font-medium mb-1">身高 (cm)</div>
+                    <Input 
+                      type="number" min="10" max="300" step="1"
+                      className="p-0 h-5 border-none shadow-none text-sm font-semibold text-slate-800 focus-visible:ring-0 bg-transparent"
+                      value={localInfo?.height_cm ?? ""}
+                      onChange={(e) => updatePatientInfo("height_cm", e.target.value)}
+                      onBlur={(e) => updatePatientInfo("height_cm", parseFloatInput(e.target.value))}
+                      placeholder="未输入"
+                    />
+                  </div>
+                  <div className="bg-white rounded-lg p-2.5 border border-slate-200 transition-colors focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-50 shadow-sm">
+                    <div className="text-[10px] text-slate-500 font-medium mb-1">体重 (kg)</div>
+                    <Input 
+                      type="number" min="1" max="500" step="0.1"
+                      className="p-0 h-5 border-none shadow-none text-sm font-semibold text-slate-800 focus-visible:ring-0 bg-transparent"
+                      value={localInfo?.weight_kg ?? ""}
+                      onChange={(e) => updatePatientInfo("weight_kg", e.target.value)}
+                      onBlur={(e) => updatePatientInfo("weight_kg", parseFloatInput(e.target.value))}
+                      placeholder="未输入"
+                    />
                   </div>
                 </div>
 
@@ -527,58 +779,74 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                   <div className="grid grid-cols-2 gap-3">
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">体温 (°C)</div>
-                       <Input onChange={(e) => updatePatientInfo("temperature", e.target.value)} onBlur={(e) => updatePatientInfo("temperature", parseFloat(e.target.value) || 0)} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.temperature ?? ""} />
+                       <Input type="number" step="0.1" min="30" max="45" onChange={(e) => updatePatientInfo("temperature", e.target.value)} onBlur={(e) => updatePatientInfo("temperature", parseFloatInput(e.target.value))} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.temperature ?? ""} />
                      </div>
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">心率 (bpm)</div>
-                       <Input onChange={(e) => updatePatientInfo("heart_rate", e.target.value ? parseInt(e.target.value) : "")} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.heart_rate ?? ""} />
+                       <Input type="number" step="1" min="0" max="300" onChange={(e) => updatePatientInfo("heart_rate", parseIntegerInput(e.target.value))} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.heart_rate ?? ""} />
                      </div>
-                     <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
-                       <div className="text-[10px] text-slate-500 font-bold mb-1">血压 (mmHg)</div>
-                       <Input onChange={(e) => updatePatientInfo("blood_pressure", e.target.value)} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.blood_pressure ?? ""} />
+                     <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white flex flex-col justify-center">
+                       <div className="text-[10px] text-slate-500 font-bold mb-1">血压 (高压/低压)</div>
+                       <div className="flex items-center text-xl font-bold text-slate-800">
+                         <Input 
+                           type="number" step="1" min="30" max="300"
+                           className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal w-[48px] text-center" 
+                           placeholder="120" 
+                           value={localInfo?.blood_pressure?.split('/')[0] ?? ""} 
+                           onChange={(e) => updatePatientInfo("blood_pressure", `${e.target.value}/${localInfo?.blood_pressure?.split('/')[1] ?? ""}`)} 
+                         />
+                         <span className="text-slate-300 font-light mx-0.5">/</span>
+                         <Input 
+                           type="number" step="1" min="30" max="200"
+                           className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal w-[48px] text-center" 
+                           placeholder="80" 
+                           value={localInfo?.blood_pressure?.split('/')[1] ?? ""} 
+                           onChange={(e) => updatePatientInfo("blood_pressure", `${localInfo?.blood_pressure?.split('/')[0] ?? ""}/${e.target.value}`)} 
+                         />
+                       </div>
                      </div>
                      <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 relative overflow-hidden transition-colors focus-within:ring-2 focus-within:ring-blue-100 focus-within:bg-white">
                        <div className="text-[10px] text-slate-500 font-bold mb-1">血氧 (SpO2%)</div>
-                       <Input onChange={(e) => updatePatientInfo("spo2", e.target.value)} onBlur={(e) => updatePatientInfo("spo2", parseFloat(e.target.value) || 0)} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.spo2 ?? ""} />
+                       <Input type="number" step="1" min="0" max="100" onChange={(e) => updatePatientInfo("spo2", e.target.value)} onBlur={(e) => updatePatientInfo("spo2", parseFloatInput(e.target.value))} className="p-0 h-auto border-none bg-transparent shadow-none text-xl font-bold text-slate-800 focus-visible:ring-0 placeholder:text-slate-300 placeholder:font-normal" placeholder="未录入" value={localInfo?.spo2 ?? ""} />
                      </div>
                   </div>
                 </div>
               </div>
 
               {/* === 右侧：主诉与既往史文本流 (65%) === */}
-              <div className="flex-1 space-y-4">
-                <div className="border border-slate-200 bg-white p-5 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                  <label className="text-sm font-medium text-slate-600 mb-3 block">主诉 (Chief Complaint)</label>
+              <div className="flex-1 flex flex-col gap-4">
+                <div className="flex flex-col border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all shrink-0">
+                  <label className="text-sm font-medium text-slate-600 mb-2 block shrink-0">主诉 (Chief Complaint)</label>
                   <Textarea 
-                    className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-slate-800 font-bold placeholder:text-slate-300 placeholder:font-normal min-h-[40px]"
+                    className="flex-1 resize-none border-none shadow-none focus-visible:ring-0 p-0 text-slate-800 font-bold placeholder:text-slate-300 placeholder:font-normal min-h-[28px]"
                     placeholder="未记录 (N/A)"
                     value={localInfo?.chief_complaint ?? ""}
                     onChange={(e) => updatePatientInfo("chief_complaint", e.target.value)}
                   />
                 </div>
-                <div className="border border-slate-200 bg-white p-5 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                  <label className="text-sm font-medium text-slate-600 mb-3 block">现病史 (Present Illness)</label>
+                <div className="flex flex-col border border-slate-200 bg-white p-5 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all" style={{ flex: 2.5 }}>
+                  <label className="text-sm font-medium text-slate-600 mb-3 block shrink-0">现病史 (Present Illness)</label>
                   <Textarea 
-                    className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-slate-800 font-bold placeholder:text-slate-300 placeholder:font-normal min-h-[60px]"
+                    className="flex-1 resize-none border-none shadow-none focus-visible:ring-0 p-0 text-slate-800 font-bold leading-relaxed placeholder:text-slate-300 placeholder:font-normal"
                     placeholder="未录入具体现病史... (N/A)"
                     value={localInfo?.present_illness ?? ""}
                     onChange={(e) => updatePatientInfo("present_illness", e.target.value)}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                    <label className="text-sm font-medium text-slate-600 mb-2 block">既往史 (Medical History)</label>
+                <div className="grid grid-cols-2 gap-4" style={{ flex: 1.5 }}>
+                  <div className="flex flex-col border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
+                    <label className="text-sm font-medium text-slate-600 mb-2 block shrink-0">既往史 (Medical History)</label>
                     <Textarea 
-                      className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold placeholder:text-slate-300 placeholder:font-normal min-h-[40px]"
+                      className="flex-1 resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold leading-relaxed placeholder:text-slate-300 placeholder:font-normal min-h-[50px]"
                       placeholder="未录入 (N/A)"
                       value={localInfo?.medical_history ?? ""}
                       onChange={(e) => updatePatientInfo("medical_history", e.target.value)}
                     />
                   </div>
-                  <div className="border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-                    <label className="text-sm font-medium text-slate-600 mb-2 block">过敏与用药 (Allergies & Meds)</label>
+                  <div className="flex flex-col border border-slate-200 bg-white p-4 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-100 transition-all">
+                    <label className="text-sm font-medium text-slate-600 mb-2 block shrink-0">过敏与用药 (Allergies & Meds)</label>
                     <Textarea 
-                      className="resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold placeholder:text-slate-300 placeholder:font-normal min-h-[40px]"
+                      className="flex-1 resize-none border-none shadow-none focus-visible:ring-0 p-0 text-sm text-slate-800 font-semibold leading-relaxed placeholder:text-slate-300 placeholder:font-normal min-h-[50px]"
                       placeholder="无已知过敏史 (N/A)"
                       value={localInfo?.allergies ?? ""}
                       onChange={(e) => updatePatientInfo("allergies", e.target.value)}
@@ -589,10 +857,10 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
             </div>
 
             {/* 医生批注区 (Doctor's Annotation) */}
-            <div className="mt-8 border-2 border-dashed border-blue-200 bg-[#f8fbff] p-5 rounded-xl relative group focus-within:border-blue-400 focus-within:bg-blue-50/50 transition-colors flex-1 flex flex-col min-h-[200px]">
+            <div className="mt-4 lg:mt-6 border-2 border-dashed border-blue-200 bg-[#f8fbff] p-5 rounded-xl relative group focus-within:border-blue-400 focus-within:bg-blue-50/50 transition-colors flex-1 flex flex-col min-h-[250px]">
               <div className="absolute -top-3 left-4 bg-blue-100 text-blue-700 text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1.5 shadow-[0_2px_4px_rgba(0,0,0,0.02)] border border-blue-200">
                  <User className="w-3.5 h-3.5" />
-                 医生诊疗批注板 (Doctor's Notepad)
+                 医生诊疗批注板 (Doctor&apos;s Notepad)
               </div>
               <Textarea 
                  placeholder="全白板模式：向下占据全部剩余空间。在此键入您对该患者病历的分析、修正、或者推断。这些信息将充当后续 LangGraph 的高权重先验知识..."
@@ -602,19 +870,81 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
           </div>
         )}
 
-        {activeTabData?.type === "imaging" && (
-          <ImagingViewer 
-             reportId={activeTabData.item?.evidence_id} 
-             threadId={caseData?.patient_thread_id}
-             imagePath={activeTabData.item?.file_path} 
-             initialStructuredData={activeTabData.item?.structured_data} 
-          />
+        {activeTabData?.type === "imaging" && activeEvidenceItem && (
+          <>
+            {(() => {
+              const imagingStructuredData = activeEvidenceItem.structured_data as ImagingStructuredData | undefined;
+
+              return imagingStructuredData?.pipeline === "brain_nifti_v1" ? (
+              imagingStructuredData.status === "processing" ? (
+                /* NIfTI 管线正在后台执行 Step 1-3，显示等待态 */
+                <div className="flex flex-col items-center justify-center flex-1 h-full text-slate-500 py-20 animate-in fade-in duration-500">
+                  <div className="relative mb-6">
+                    <div className="w-20 h-20 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
+                    <span className="absolute inset-0 flex items-center justify-center text-2xl">🧠</span>
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-700 mb-2">3D 脑肿瘤分析管线运行中</h3>
+                  <p className="text-sm text-slate-400 max-w-md text-center leading-relaxed">
+                    正在执行 nnU-Net 3D 分割 → 空间定位 → 2D 渲染切片...<br/>
+                    预计耗时 30-120 秒，请稍候。页面将自动刷新。
+                  </p>
+                  <div className="mt-5 w-full max-w-xl rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+                    <div className="flex flex-wrap gap-2">
+                      {BRAIN_MRI_REQUIRED_SEQUENCES.map((sequence) => {
+                        const detected = Array.isArray(imagingStructuredData?.detected_sequences)
+                          ? imagingStructuredData.detected_sequences.includes(sequence)
+                          : false;
+                        return (
+                          <span
+                            key={sequence}
+                            className={cn(
+                              "rounded-full border px-3 py-1 text-[11px] font-semibold uppercase",
+                              detected
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-slate-200 bg-slate-50 text-slate-500",
+                            )}
+                          >
+                            {sequence}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-3 text-sm text-slate-600">
+                      {Array.isArray(imagingStructuredData?.missing_sequences) && imagingStructuredData.missing_sequences.length > 0
+                        ? `当前仍缺少序列：${imagingStructuredData.missing_sequences.join(" / ")}`
+                        : "四序列已识别完成，正在等待模型生成空间结果。"}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <BrainSpatialReview 
+                  key={activeEvidenceItem.evidence_id}
+                  spatialInfo={(imagingStructuredData?.spatial_info ?? {}) as SpatialInfo}
+                  slicePngPath={imagingStructuredData?.slice_png_path}
+                  evidenceId={activeEvidenceItem.evidence_id}
+                  caseId={caseId ?? ""}
+                  status={imagingStructuredData?.status ?? ""}
+                  threadId={caseData?.patient_thread_id}
+                />
+              )
+            ) : (
+              <ImagingViewer 
+                 key={String(imagingStructuredData?.report_id ?? activeEvidenceItem.evidence_id)}
+                 reportId={String(imagingStructuredData?.report_id ?? activeEvidenceItem.evidence_id)} 
+                 threadId={caseData?.patient_thread_id}
+                 imagePath={activeEvidenceItem.file_path ?? undefined} 
+                  initialStructuredData={activeEvidenceItem.structured_data as Partial<McpAnalysisResult> | undefined} 
+              />
+            );
+            })()}
+          </>
         )}
 
-        {(activeTabData?.type === "lab" || activeTabData?.type === "ecg" || activeTabData?.type === "note") && (
-          <div className="animate-in fade-in duration-300 h-full flex-1 w-full bg-[#fdfbf7]">
+        {(activeTabData?.type === "lab" || activeTabData?.type === "ecg" || activeTabData?.type === "note") && activeEvidenceItem && (
+          <div className="animate-in fade-in duration-300 h-full flex-1 flex flex-col w-full bg-[#fdfbf7] overflow-y-auto">
              {(() => {
-               const rawText = activeTabData.item?.ai_analysis || "";
+               const rawText = activeEvidenceItem.ai_analysis ?? "";
+               const labStructuredData = activeEvidenceItem.structured_data as LabStructuredData | undefined;
 
                if (!rawText) {
                  return (
@@ -629,10 +959,13 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
                return (
                  <LabMarkdownViewer 
                    rawText={rawText}
-                   title={activeTabData.item?.title}
-                   isAbnormal={activeTabData.item?.is_abnormal}
-                   evidenceId={activeTabData.item?.evidence_id}
+                   title={activeEvidenceItem.title}
+                   isAbnormal={activeEvidenceItem.is_abnormal}
+                   evidenceId={activeEvidenceItem.evidence_id}
                    caseId={caseId}
+                   ocrRawNumbers={labStructuredData?.ocr_raw_numbers}
+                   valueWarnings={labStructuredData?.value_warnings}
+                   originalImageUrl={activeEvidenceItem.file_path ?? undefined}
                  />
                );
              })()}
@@ -727,7 +1060,9 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
               </Button>
               <Button
                 size="lg"
-                onClick={handleSubmitDiagnosis}
+                onClick={() => {
+                  void handleSubmitDiagnosis();
+                }}
                 disabled={isSubmitting || !diagnosisForm.primary_diagnosis.trim()}
                 className="px-8 py-6 text-base rounded-full font-semibold bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 gap-2 disabled:opacity-50"
               >
@@ -761,15 +1096,37 @@ export function EvidenceDesk({ activeTab, onTabChange, isReviewPassed, onReviewP
              </div>
              {/* 综合诊断按钮 */}
              {onSynthesisDiagnosis && (
-               <Button
-                 size="lg"
-                 onClick={handleSynthesisDiagnosis}
-                 disabled={isSynthesizing || !caseId}
-                 className="px-6 py-6 text-base rounded-full font-semibold bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5 gap-2"
-               >
-                 {isSynthesizing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
-                 {isSynthesizing ? "汇总中..." : "一键综合诊断"}
-               </Button>
+               <div className="flex flex-col items-end gap-1.5">
+                 <div className="text-right">
+                   <div className={cn(
+                     "text-xs font-medium",
+                     summaryReadiness?.ready_for_synthesis ? "text-emerald-600" : "text-amber-700",
+                   )}>
+                     {summaryReadiness?.ready_for_synthesis ? "病例资料已齐，可进行综合诊断" : (summaryReadiness?.status_text ?? "正在检查病例资料完整性")}
+                   </div>
+                   {!summaryReadiness?.ready_for_synthesis && summaryReadiness?.next_action ? (
+                     <div className="mt-0.5 max-w-xs text-[11px] leading-5 text-slate-500">
+                       {summaryReadiness.next_action}
+                     </div>
+                   ) : null}
+                 </div>
+                 <Button
+                   size="lg"
+                   onClick={() => {
+                     handleSynthesisDiagnosis();
+                   }}
+                   disabled={isSynthesizing || !caseId || !summaryReadiness?.ready_for_synthesis}
+                   className={cn(
+                     "px-6 py-6 text-base rounded-full font-semibold text-white shadow-lg transition-all gap-2",
+                     summaryReadiness?.ready_for_synthesis
+                       ? "bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 hover:shadow-xl hover:-translate-y-0.5"
+                       : "bg-slate-300 text-slate-500 shadow-none hover:bg-slate-300",
+                   )}
+                 >
+                   {isSynthesizing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Sparkles className="h-5 w-5" />}
+                   {isSynthesizing ? "汇总中..." : summaryReadiness?.ready_for_synthesis ? "一键综合诊断" : "等待资料齐全"}
+                 </Button>
+               </div>
              )}
              <Button 
                 size="lg"

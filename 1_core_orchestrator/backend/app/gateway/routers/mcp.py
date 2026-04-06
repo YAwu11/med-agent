@@ -1,5 +1,5 @@
 import json
-import logging
+from loguru import logger
 from pathlib import Path
 from typing import Literal
 
@@ -8,9 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["mcp"])
-
 
 class McpOAuthConfigResponse(BaseModel):
     """OAuth configuration for an MCP server."""
@@ -30,7 +28,6 @@ class McpOAuthConfigResponse(BaseModel):
     refresh_skew_seconds: int = Field(default=60, description="Refresh this many seconds before expiry")
     extra_token_params: dict[str, str] = Field(default_factory=dict, description="Additional form params sent to token endpoint")
 
-
 class McpServerConfigResponse(BaseModel):
     """Response model for MCP server configuration."""
 
@@ -44,7 +41,6 @@ class McpServerConfigResponse(BaseModel):
     oauth: McpOAuthConfigResponse | None = Field(default=None, description="OAuth configuration for MCP HTTP/SSE servers")
     description: str = Field(default="", description="Human-readable description of what this MCP server provides")
 
-
 class McpConfigResponse(BaseModel):
     """Response model for MCP configuration."""
 
@@ -53,7 +49,6 @@ class McpConfigResponse(BaseModel):
         description="Map of MCP server name to configuration",
     )
 
-
 class McpConfigUpdateRequest(BaseModel):
     """Request model for updating MCP configuration."""
 
@@ -61,7 +56,6 @@ class McpConfigUpdateRequest(BaseModel):
         ...,
         description="Map of MCP server name to configuration",
     )
-
 
 @router.get(
     "/mcp/config",
@@ -93,7 +87,6 @@ async def get_mcp_configuration() -> McpConfigResponse:
     config = get_extensions_config()
 
     return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in config.mcp_servers.items()})
-
 
 @router.put(
     "/mcp/config",

@@ -7,6 +7,10 @@ MODULE_TO_PACKAGE_HINTS = {
     "langchain_deepseek": "langchain-deepseek",
 }
 
+CLASS_PATH_ALIASES = {
+    "deerflow.sandbox.": "app.core.sandbox.",
+}
+
 
 def _build_missing_dependency_hint(module_path: str, err: ImportError) -> str:
     """Build an actionable hint when module import fails."""
@@ -90,6 +94,12 @@ def resolve_class[T](class_path: str, base_class: type[T] | None = None) -> type
         raise ValueError(f"{class_path} is not a valid class")
 
     if base_class is not None and not issubclass(model_class, base_class):
+        for source_prefix, target_prefix in CLASS_PATH_ALIASES.items():
+            if class_path.startswith(source_prefix):
+                aliased_class_path = target_prefix + class_path.removeprefix(source_prefix)
+                aliased_class = resolve_variable(aliased_class_path, expected_type=type)
+                if isinstance(aliased_class, type) and issubclass(aliased_class, base_class):
+                    return aliased_class
         raise ValueError(f"{class_path} is not a subclass of {base_class.__name__}")
 
     return model_class

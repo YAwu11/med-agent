@@ -53,9 +53,19 @@ The single LangGraph agent (`lead_agent`) is the runtime entry point, created vi
 - **Subagent delegation** for parallel task execution
 - **System prompt** with skills injection, memory context, and working directory guidance
 
+The default patient-facing runtime now uses a dedicated `patient_intake` profile:
+
+- forces non-thinking mode for lower latency
+- exposes only `update_patient_info`, `show_medical_record`, `read_patient_record`, `preview_appointment`, and `ask_clarification`
+- removes patient-side `rag_retrieve`, upload interpretation, and other broad tool surfaces from the default lead-agent path
+- keeps upload analysis on the backend side only; after appointment confirmation, pending historical uploads are attached to the created case so doctor-side workflows can continue from the same evidence set
+- reserves a `structured_data.triage` contract for future visual triage models, while patient-facing projections must stay limited to the reduced summary fields
+
 ### Middleware Chain
 
 Middlewares execute in strict order, each handling a specific concern:
+
+For the default `patient_intake` lead-agent profile, the runtime is intentionally reduced to `ThreadDataMiddleware`, `DanglingToolCallMiddleware`, `ToolErrorHandlingMiddleware`, and `ClarificationMiddleware`. The fuller chain below still describes the non-patient profiles and shared framework capabilities.
 
 | # | Middleware | Purpose |
 |---|-----------|---------|
@@ -119,6 +129,7 @@ FastAPI application providing REST endpoints for frontend integration:
 | `GET/PUT /api/mcp/config` | Manage MCP server configurations |
 | `GET/PUT /api/skills` | List and manage skills |
 | `POST /api/skills/install` | Install skill from `.skill` archive |
+| `GET/POST/PUT/DELETE /api/agents` | Manage custom agents using the shared deerflow agent-config loader |
 | `GET /api/memory` | Retrieve memory data |
 | `POST /api/memory/reload` | Force memory reload |
 | `GET /api/memory/config` | Memory configuration |
@@ -127,6 +138,22 @@ FastAPI application providing REST endpoints for frontend integration:
 | `GET /api/threads/{id}/uploads/list` | List uploaded files |
 | `DELETE /api/threads/{id}` | Delete DeerFlow-managed local thread data after LangGraph thread deletion; unexpected failures are logged server-side and return a generic 500 detail |
 | `GET /api/threads/{id}/artifacts/{path}` | Serve generated artifacts |
+
+Route-level regression coverage also includes `tests/test_cases_router.py`, which verifies `/api/cases/{case_id}/summary-readiness`, the HTTP 409 synthesis gate on `/api/cases/{case_id}/summary`, and that the diagnosis PUT route is only registered once.
+
+Upload and imaging review regression coverage also includes `tests/test_uploads_router.py` and `tests/test_imaging_reports_router.py`, which verify direct upload handler behavior (thread-local writes, markdown sidecars, unsafe filename normalization, brain MRI sequence guidance only counting `.nii/.nii.gz` uploads, and a route-level 4-sequence upload -> brain-report -> doctor-review save flow) and that stateless `/api/threads/{id}/imaging-reports/analyze-cv` can fall back to the existing case imaging evidence when the frontend omits `image_url`. The same imaging report suite also locks doctor-review persistence so partial doctor edits keep existing `summary`, `densenet_probs`, and `rejected` payloads instead of wiping them. Repo-level automation for this slice now lives in `.github/workflows/doctor-imaging-ci.yml`, whose backend job runs these imaging regressions on pull requests and pushes that touch the relevant subtrees.
+
+Lab-report OCR now prefers the local `PPStructureV3 -> Qwen` pipeline, but automatically falls back to the existing cloud `PaddleOCR-VL` path when the local Paddle dependencies are unavailable or the local pass yields no markdown. This keeps `/api/threads/{id}/uploads` from returning a silently empty lab-analysis result on Windows machines that only ran `uv sync`.
+
+Run `python scripts/check_local_lab_ocr.py` inside `backend/` to see whether the current environment is in `local_ready` mode or `cloud_fallback` mode. To opt into the local `PPStructureV3` stack on Windows, run `powershell -ExecutionPolicy Bypass -File scripts/install_local_lab_ocr.ps1` from the repository root.
+
+Pydantic migration coverage also includes `tests/test_appointment_router.py`, which verifies the patient-intake patch model keeps `extra="allow"` behavior without emitting the Pydantic v1 class-config deprecation warning, and that confirmed OCR lab evidence is normalized to the case-domain `lab` / `patient_upload` vocabulary before persistence.
+
+Patient upload handoff coverage also includes `tests/test_patient_upload_handoff.py`, which verifies uploads that were still pending analysis before registration are attached to the case at confirmation time instead of being stranded in the thread sandbox.
+
+Structured visual triage contract coverage also includes `tests/test_triage_contract.py`, which verifies the placeholder backend contract exposes the full triage shape, keeps a reduced patient projection, and attaches `structured_data.triage` during shared parallel analysis without requiring a real triage model yet.
+
+Dependency hygiene coverage also includes `tests/test_dependency_warnings.py`, which verifies importing `requests` does not emit `RequestsDependencyWarning` from an incompatible transitive `chardet` version.
 
 ### IM Channels
 
@@ -156,6 +183,14 @@ cp config.example.yaml config.yaml
 cd backend
 make install
 ```
+
+Optional Windows-only local lab OCR enhancement:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_local_lab_ocr.ps1
+```
+
+That optional script installs the pinned `paddlepaddle` / `paddleocr` / `paddlex` stack into `backend/.venv`. A plain `uv sync` intentionally does not install those heavyweight packages. Stop any running Gateway / LangGraph / MCP windows first, otherwise Windows can lock files inside `backend/.venv` and block the install.
 
 ### Configuration
 
@@ -205,9 +240,50 @@ make dev
 
 # Terminal 2: Gateway API
 make gateway
+
+# Windows-safe direct command
+PYTHONPATH=. uv run python -m uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001
 ```
 
 Direct access: LangGraph at http://localhost:2024, Gateway at http://localhost:8001
+
+On Windows hosts with application control enabled, prefer the module form above. `make gateway` now uses `uv run python -m uvicorn ...` internally to avoid `uvicorn` console-script blocking.
+
+### Windows helper for MCP + local services
+
+From the repository root, use the PowerShell helper below to start the local service set that the medical workflow depends on:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start/start_all_with_mcp.ps1
+```
+
+That helper starts these services on Windows in one pass:
+
+- LangGraph on `127.0.0.1:2024`
+- Gateway on `localhost:8001`
+- Chest X-ray MCP on `localhost:8002`
+- Brain tumor MCP on `localhost:8003`
+- RAGFlow Lite on `localhost:9380`
+
+Important local-dev notes:
+
+- In this checkout, `backend/.venv/Scripts/langgraph.exe` can fail with `uv trampoline failed to canonicalize script path`; the helper works around that by calling the Click entrypoint through `python -c`.
+- The helper bootstraps `pip` inside `backend/.venv` if it is missing, then installs `nnunetv2` and `nibabel` as required brain-pipeline dependencies and `antspyx` as an optional upgrade for richer spatial localization.
+- The helper prints the current lab OCR mode before startup. `cloud_fallback` means local Paddle packages are missing from `backend/.venv` and uploads will use remote `PaddleOCR-VL` instead.
+- If brain weights or atlas files are not installed yet, the `8003` service still starts and returns completed responses with `is_mock_fallback: true`. That is expected until the local model assets are present.
+
+### Brain MCP live smoke test
+
+To verify the real `backend -> 8003 MCP service` path without any model weights, run the live smoke test from the backend directory:
+
+```powershell
+$env:RUN_BRAIN_MCP_LIVE = "1"
+$env:PYTHONPATH = "."
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
+.\.venv\Scripts\python.exe -m pytest tests/test_brain_mcp_live.py -v -s
+```
+
+The test generates a synthetic 4-sequence BraTS-style case (`t1`, `t1ce`, `t2`, `flair`), calls the live MCP service on `localhost:8003`, and verifies that the round-trip completed and that segmentation is no longer using the mock backend. The extra `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` keeps third-party pytest plugins from interfering with this local-only smoke path.
 
 ---
 
@@ -321,7 +397,7 @@ MCP servers and skill states in a single file:
 ```bash
 make install    # Install dependencies
 make dev        # Run LangGraph server (port 2024)
-make gateway    # Run Gateway API (port 8001)
+make gateway    # Run Gateway API (port 8001, via python -m uvicorn)
 make lint       # Run linter (ruff)
 make format     # Format code (ruff)
 ```

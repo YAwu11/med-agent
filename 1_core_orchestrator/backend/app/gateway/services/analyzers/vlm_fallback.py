@@ -1,14 +1,13 @@
 """VLM Fallback analyzer for unrecognized clinical photos or general documents."""
 
 import base64
-import logging
+from loguru import logger
 import os
 
 import httpx
 
 from app.gateway.services.analyzer_registry import AnalysisResult
 
-logger = logging.getLogger(__name__)
 
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
 # Using Qwen2.5-VL-72B for general robust instruction following and visual understanding.

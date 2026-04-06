@@ -7,29 +7,47 @@ Provides REST API for the frontend to:
 """
 
 import json
-import logging
+import os
+import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
+import httpx
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
 from app.core.config.paths import get_paths
 from app.gateway.services.case_db import (
-    sync_report_from_file,
-    get_reports_by_thread,
-    get_report_by_id,
-    update_report,
     get_case_by_thread,
+    get_report_by_id,
+    get_reports_by_thread,
+    sync_report_from_file,
+    update_evidence_data,
+    update_report,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/threads/{thread_id}/imaging-reports",
     tags=["imaging-reports"],
 )
 
+
+def _extract_densenet_probs(ai_result_raw: dict[str, Any]) -> dict[str, Any]:
+    top_level_probs = ai_result_raw.get("densenet_probs")
+    if isinstance(top_level_probs, dict):
+        return top_level_probs
+
+    summary_probs = ai_result_raw.get("summary", {}).get("disease_probabilities", {})
+    return summary_probs if isinstance(summary_probs, dict) else {}
+
+
+def _ensure_finding_ids(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for finding in findings:
+        if not finding.get("id"):
+            finding["id"] = uuid.uuid4().hex[:8]
+    return findings
 
 def _get_reports_dir(thread_id: str) -> Path:
     """Get the imaging-reports directory for a thread."""
@@ -39,11 +57,9 @@ def _get_reports_dir(thread_id: str) -> Path:
     reports_dir.mkdir(parents=True, exist_ok=True)
     return reports_dir
 
-
 class DoctorReviewSubmission(BaseModel):
     """Doctor's review submission."""
     doctor_result: dict[str, Any]
-
 
 @router.get("")
 def list_imaging_reports(
@@ -74,7 +90,6 @@ def list_imaging_reports(
 
     return {"reports": reports, "total": len(reports)}
 
-
 @router.get("/{report_id}")
 def get_imaging_report(thread_id: str, report_id: str):
     """Get a specific imaging report by ID."""
@@ -93,7 +108,6 @@ def get_imaging_report(thread_id: str, report_id: str):
         raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
     return report
-
 
 @router.put("/{report_id}")
 def submit_doctor_review(
@@ -119,10 +133,11 @@ def submit_doctor_review(
     updated_report = update_report(report_id, submission.doctor_result)
     if not updated_report:
         raise HTTPException(status_code=500, detail="Failed to update report in database")
+    merged_doctor_result = updated_report.get("doctor_result") if isinstance(updated_report.get("doctor_result"), dict) else submission.doctor_result
 
     # [P1 Sync] Sync to cases table macro evidence array
     from app.gateway.services.case_db import update_case_evidence_from_report
-    update_case_evidence_from_report(thread_id, report_id, submission.doctor_result)
+    update_case_evidence_from_report(thread_id, report_id, merged_doctor_result)
 
     # 3. Write back to sandbox file to unblock the Agent Tool
     try:
@@ -133,7 +148,7 @@ def submit_doctor_review(
     # Support re-edit: increment version instead of rejecting already-reviewed reports
     data["version"] = data.get("version", 0) + 1
     data["status"] = "reviewed"
-    data["doctor_result"] = submission.doctor_result
+    data["doctor_result"] = merged_doctor_result
 
     report_file.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
@@ -143,16 +158,13 @@ def submit_doctor_review(
     logger.info(f"[HITL] Report {report_id} reviewed by doctor and synced to DB")
     return {"status": "ok", "report_id": report_id, "data": updated_report}
 
-
 class GenerateDraftRequest(BaseModel):
     doctor_result: dict[str, Any]
     prompt: str | None = None
 
-
 class AnalyzeCVRequest(BaseModel):
     image_url: str | None = None
     enable_sam: bool = False
-
 
 @router.post("/analyze-cv")
 async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None = None):
@@ -160,10 +172,6 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     [Phase 6 Stateless Endpoint] 
     Bypass LangGraph and run CV model (YOLO/DenseNet) directly on the uploaded image via MCP SSE.
     """
-    import asyncio
-    import uuid
-    import httpx
-    
     report_id = f"cv_{uuid.uuid4().hex[:8]}"
     reports_dir = _get_reports_dir(thread_id)
     
@@ -181,8 +189,7 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     
     local_image_path = ""
     if image_url:
-        import urllib.parse
-        decoded_url = urllib.parse.unquote(image_url)
+        decoded_url = unquote(image_url)
         
         if decoded_url.startswith(f"/api/threads/{thread_id}/artifacts/"):
             virtual_path = decoded_url.split(f"/api/threads/{thread_id}/artifacts/", 1)[1]
@@ -220,7 +227,8 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
             try:
                 report_data = json.loads(report_file.read_text(encoding="utf-8"))
                 db_image_path = report_data.get("image_path", "")
-                if db_image_path and Path(db_image_path).name == image_filename:
+                decoded_db_image_path = unquote(db_image_path)
+                if db_image_path and Path(decoded_db_image_path).name == image_filename:
                     logger.info(f"[HITL] Using existing report found for {image_filename}")
                     
                     # Ensure it's synced to DB
@@ -241,10 +249,50 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     try:
         ai_result_raw = await analyze_xray(local_image_path, enable_sam=enable_sam)
         
+        # [CRITICAL FIX] Convert MCP format to frontend schema
+        findings = _ensure_finding_ids(ai_result_raw.get("findings", []))
+        colors = ["red", "amber", "purple", "teal"]
+        try:
+            from PIL import Image
+            with Image.open(local_image_path) as img:
+                img_w, img_h = img.size
+            for i, f in enumerate(findings):
+                # 1. Map bounding box [x1, y1, x2, y2] to {x, y, width, height} percentage
+                if "bbox" in f and isinstance(f["bbox"], list) and len(f["bbox"]) == 4:
+                    x1, y1, x2, y2 = f["bbox"]
+                    f["bbox"] = {
+                        "x": (x1 / img_w) * 100 if img_w else 0,
+                        "y": (y1 / img_h) * 100 if img_h else 0,
+                        "width": ((x2 - x1) / img_w) * 100 if img_w else 0,
+                        "height": ((y2 - y1) / img_h) * 100 if img_h else 0
+                    }
+                
+                # 2. Map 'disease' to 'name' (Required by UI)
+                if "disease" in f and "name" not in f:
+                    f["name"] = f["disease"]
+                    
+                # 3. Map 'confidence' 0..1 to 0..100 (UI expects percentage format)
+                if "confidence" in f and f["confidence"] <= 1.0:
+                    f["confidence"] = f["confidence"] * 100
+                    
+                # 4. Inject required frontend properties for rendering and logic
+                f["source"] = "ai"
+                f["modified"] = False
+                f["color"] = colors[i % len(colors)]
+                f["note"] = f.get("location_cn", "") or f.get("location", "")
+                
+        except Exception as e:
+            logger.warning(f"Failed to normalize findings format: {e}")
+
         # Format to our system's expected ai_result structure
         formatted_ai_result = {
-            "findings": ai_result_raw.get("findings", []),
-            "densenet_probs": ai_result_raw.get("summary", {}).get("disease_probabilities", {})
+            "findings": findings,
+            "summary": ai_result_raw.get("summary", {}),
+            "densenet_probs": _extract_densenet_probs(ai_result_raw),
+            "rejected": ai_result_raw.get("rejected", []),
+            "pipeline": ai_result_raw.get("pipeline"),
+            "disclaimer": ai_result_raw.get("disclaimer"),
+            "model_version": ai_result_raw.get("pipeline"),
         }
     except Exception as e:
         logger.error(f"[HITL] MCP Call Failed: {e}", exc_info=True)
@@ -263,10 +311,23 @@ async def stateless_analyze_cv(thread_id: str, payload: AnalyzeCVRequest | None 
     
     report_file = reports_dir / f"{report_id}.json"
     report_file.write_text(json.dumps(generated_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    
     logger.info(f"[HITL] Analysis complete. Saved to {report_file.name}")
-    return {"status": "ok", "report_id": report_id, "data": generated_data}
 
+    # 4. Sync the structured data to the case evidence database
+    try:
+        case = get_case_by_thread(thread_id)
+        if case:
+            for item in case.evidence:
+                # Match by exact URL or filename
+                if item.file_path == image_url or (item.file_path and Path(unquote(item.file_path)).name == image_filename):
+                    update_evidence_data(case.case_id, item.evidence_id, {
+                        "structured_data": generated_data
+                    })
+                    break
+    except Exception as e:
+        logger.error(f"[HITL] Failed to sync generated report to case DB: {e}")
+
+    return {"status": "ok", "report_id": report_id, "data": generated_data}
 
 @router.post("/generate-draft")
 async def generate_text_draft(thread_id: str, request: GenerateDraftRequest):
@@ -275,9 +336,6 @@ async def generate_text_draft(thread_id: str, request: GenerateDraftRequest):
     Takes the doctor's reviewed JSON + optional instructions, calls SiliconFlow LLM
     to generate a readable radiology report. No memory, no LangGraph loop.
     """
-    import os
-    import httpx
-
     findings = request.doctor_result.get("findings", [])
     densenet_probs = request.doctor_result.get("densenet_probs", {})
 

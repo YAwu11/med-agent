@@ -1,5 +1,5 @@
 import json
-import logging
+from loguru import logger
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -10,10 +10,8 @@ from app.core.config.extensions_config import ExtensionsConfig, SkillStateConfig
 from app.core.skills import Skill, load_skills
 from app.core.skills.installer import SkillAlreadyExistsError, install_skill_from_archive
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["skills"])
-
 
 class SkillResponse(BaseModel):
     """Response model for skill information."""
@@ -24,18 +22,15 @@ class SkillResponse(BaseModel):
     category: str = Field(..., description="Category of the skill (public or custom)")
     enabled: bool = Field(default=True, description="Whether this skill is enabled")
 
-
 class SkillsListResponse(BaseModel):
     """Response model for listing all skills."""
 
     skills: list[SkillResponse]
 
-
 class SkillUpdateRequest(BaseModel):
     """Request model for updating a skill."""
 
     enabled: bool = Field(..., description="Whether to enable or disable the skill")
-
 
 class SkillInstallRequest(BaseModel):
     """Request model for installing a skill from a .skill file."""
@@ -43,14 +38,12 @@ class SkillInstallRequest(BaseModel):
     thread_id: str = Field(..., description="The thread ID where the .skill file is located")
     path: str = Field(..., description="Virtual path to the .skill file (e.g., mnt/user-data/outputs/my-skill.skill)")
 
-
 class SkillInstallResponse(BaseModel):
     """Response model for skill installation."""
 
     success: bool = Field(..., description="Whether the installation was successful")
     skill_name: str = Field(..., description="Name of the installed skill")
     message: str = Field(..., description="Installation result message")
-
 
 def _skill_to_response(skill: Skill) -> SkillResponse:
     """Convert a Skill object to a SkillResponse."""
@@ -61,7 +54,6 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
         category=skill.category,
         enabled=skill.enabled,
     )
-
 
 @router.get(
     "/skills",
@@ -76,7 +68,6 @@ async def list_skills() -> SkillsListResponse:
     except Exception as e:
         logger.error(f"Failed to load skills: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load skills: {str(e)}")
-
 
 @router.get(
     "/skills/{skill_name}",
@@ -98,7 +89,6 @@ async def get_skill(skill_name: str) -> SkillResponse:
     except Exception as e:
         logger.error(f"Failed to get skill {skill_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get skill: {str(e)}")
-
 
 @router.put(
     "/skills/{skill_name}",
@@ -147,7 +137,6 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest) -> SkillRes
     except Exception as e:
         logger.error(f"Failed to update skill {skill_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update skill: {str(e)}")
-
 
 @router.post(
     "/skills/install",

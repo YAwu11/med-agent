@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 import mimetypes
 import zipfile
 from pathlib import Path
@@ -9,10 +9,8 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Res
 
 from app.gateway.path_utils import resolve_thread_virtual_path
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["artifacts"])
-
 
 def is_text_file_by_content(path: Path, sample_size: int = 8192) -> bool:
     """Check if file is text by examining content for null bytes."""
@@ -23,7 +21,6 @@ def is_text_file_by_content(path: Path, sample_size: int = 8192) -> bool:
             return b"\x00" not in chunk
     except Exception:
         return False
-
 
 def _extract_file_from_skill_archive(zip_path: Path, internal_path: str) -> bytes | None:
     """Extract a file from a .skill ZIP archive.
@@ -56,7 +53,6 @@ def _extract_file_from_skill_archive(zip_path: Path, internal_path: str) -> byte
             return None
     except (zipfile.BadZipFile, KeyError):
         return None
-
 
 @router.get(
     "/threads/{thread_id}/artifacts/{path:path}",

@@ -1,6 +1,6 @@
 """CRUD API for custom agents."""
 
-import logging
+from loguru import logger
 import re
 import shutil
 
@@ -8,14 +8,12 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.core.config.agents_config import AgentConfig, list_custom_agents, load_agent_config, load_agent_soul
 from app.core.config.paths import get_paths
+from deerflow.config.agents_config import AgentConfig, list_custom_agents, load_agent_config, load_agent_soul
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["agents"])
 
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
-
 
 class AgentResponse(BaseModel):
     """Response model for a custom agent."""
@@ -26,12 +24,10 @@ class AgentResponse(BaseModel):
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
     soul: str | None = Field(default=None, description="SOUL.md content (included on GET /{name})")
 
-
 class AgentsListResponse(BaseModel):
     """Response model for listing all custom agents."""
 
     agents: list[AgentResponse]
-
 
 class AgentCreateRequest(BaseModel):
     """Request body for creating a custom agent."""
@@ -42,7 +38,6 @@ class AgentCreateRequest(BaseModel):
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
     soul: str = Field(default="", description="SOUL.md content — agent personality and behavioral guardrails")
 
-
 class AgentUpdateRequest(BaseModel):
     """Request body for updating a custom agent."""
 
@@ -50,7 +45,6 @@ class AgentUpdateRequest(BaseModel):
     model: str | None = Field(default=None, description="Updated model override")
     tool_groups: list[str] | None = Field(default=None, description="Updated tool group whitelist")
     soul: str | None = Field(default=None, description="Updated SOUL.md content")
-
 
 def _validate_agent_name(name: str) -> None:
     """Validate agent name against allowed pattern.
@@ -67,11 +61,9 @@ def _validate_agent_name(name: str) -> None:
             detail=f"Invalid agent name '{name}'. Must match ^[A-Za-z0-9-]+$ (letters, digits, and hyphens only).",
         )
 
-
 def _normalize_agent_name(name: str) -> str:
     """Normalize agent name to lowercase for filesystem storage."""
     return name.lower()
-
 
 def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False) -> AgentResponse:
     """Convert AgentConfig to AgentResponse."""
@@ -86,7 +78,6 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         tool_groups=agent_cfg.tool_groups,
         soul=soul,
     )
-
 
 @router.get(
     "/agents",
@@ -106,7 +97,6 @@ async def list_agents() -> AgentsListResponse:
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
-
 
 @router.get(
     "/agents/check",
@@ -129,7 +119,6 @@ async def check_agent_name(name: str) -> dict:
     normalized = _normalize_agent_name(name)
     available = not get_paths().agent_dir(normalized).exists()
     return {"available": available, "name": normalized}
-
 
 @router.get(
     "/agents/{name}",
@@ -160,7 +149,6 @@ async def get_agent(name: str) -> AgentResponse:
     except Exception as e:
         logger.error(f"Failed to get agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get agent: {str(e)}")
-
 
 @router.post(
     "/agents",
@@ -222,7 +210,6 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
             shutil.rmtree(agent_dir)
         logger.error(f"Failed to create agent '{request.name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
-
 
 @router.put(
     "/agents/{name}",
@@ -290,18 +277,15 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
         logger.error(f"Failed to update agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
 
-
 class UserProfileResponse(BaseModel):
     """Response model for the global user profile (USER.md)."""
 
     content: str | None = Field(default=None, description="USER.md content, or null if not yet created")
 
-
 class UserProfileUpdateRequest(BaseModel):
     """Request body for setting the global user profile."""
 
     content: str = Field(default="", description="USER.md content — describes the user's background and preferences")
-
 
 @router.get(
     "/user-profile",
@@ -324,7 +308,6 @@ async def get_user_profile() -> UserProfileResponse:
     except Exception as e:
         logger.error(f"Failed to read user profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to read user profile: {str(e)}")
-
 
 @router.put(
     "/user-profile",
@@ -350,7 +333,6 @@ async def update_user_profile(request: UserProfileUpdateRequest) -> UserProfileR
     except Exception as e:
         logger.error(f"Failed to update user profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update user profile: {str(e)}")
-
 
 @router.delete(
     "/agents/{name}",
